@@ -1014,6 +1014,7 @@ function App() {
                 {players.map((player) => {
                   const isActive = state.activePlayerId === player.id
                   const isLocal = state.localPlayerId === player.id
+                  const isConnected = player.connected
                   const lowTime = player.displayMs < 30_000
                   return (
                     <div
@@ -1022,6 +1023,10 @@ function App() {
                         isActive
                           ? 'border-amber-300 bg-amber-100/10 shadow-[var(--glow)]'
                           : 'border-white/15 bg-white/5'
+                      } ${
+                        isConnected
+                          ? 'opacity-100'
+                          : 'border-rose-300/40 bg-rose-200/5 opacity-70 saturate-50'
                       }`}
                     >
                       <div className="flex items-center justify-between">
@@ -1029,6 +1034,11 @@ function App() {
                           {player.name}
                           {isLocal ? ' (You)' : ''}
                         </p>
+                        {!isConnected && (
+                          <span className="mono rounded-md border border-rose-300/60 bg-rose-200/10 px-2 py-1 text-[10px] uppercase tracking-[0.12em] text-rose-200">
+                            Disconnected
+                          </span>
+                        )}
                         {isHost && player.id !== state.hostPlayerId && (
                           <Button
                             className="px-2 py-1 text-[10px]"
@@ -1039,14 +1049,14 @@ function App() {
                           </Button>
                         )}
                       </div>
-                      <p className={`mono mt-3 text-4xl tracking-tight ${lowTime ? 'text-rose-300' : 'text-[#ecf5f1]'}`}>
+                      <p className={`mono mt-3 text-4xl tracking-tight ${lowTime ? 'text-rose-300' : 'text-[#ecf5f1]'} ${isConnected ? '' : 'text-white/60'}`}>
                         {formatMs(player.displayMs)}
                       </p>
                       <div className="mt-3 flex flex-wrap gap-2">
-                        <Button disabled={reconnectBlocked} onClick={() => void sendControl('START_TIMER', { playerId: player.id })}>
+                        <Button disabled={reconnectBlocked || !isConnected} onClick={() => void sendControl('START_TIMER', { playerId: player.id })}>
                           Start
                         </Button>
-                        <Button disabled={reconnectBlocked} onClick={() => void sendControl('SWITCH_ACTIVE', { nextPlayerId: player.id })}>
+                        <Button disabled={reconnectBlocked || !isConnected} onClick={() => void sendControl('SWITCH_ACTIVE', { nextPlayerId: player.id })}>
                           Switch
                         </Button>
                         {isActive && (
