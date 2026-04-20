@@ -28,6 +28,7 @@ const HOST_RECONNECT_TIMEOUT_MS = 60_000
 const HOST_SIGNAL_LOSS_THRESHOLD_MS = 5_000
 const RECONNECT_ATTEMPT_INTERVAL_MS = 5_000
 const JOIN_REQUEST_TIMEOUT_MS = 15_000
+const JOIN_RETRY_INTERVAL_MS = 1_800
 const JOIN_TIMEOUT_SECONDS = JOIN_REQUEST_TIMEOUT_MS / 1000
 const JOIN_CANCEL_GUARD_TTL_MS = 30_000
 const JOIN_CODE_LENGTH = 8
@@ -114,6 +115,7 @@ function App() {
     message: '',
   })
   const joinRequestRef = useRef<NetworkMessage | null>(null)
+  const joinRetryInFlightRef = useRef(false)
   const joinStatusTimerRef = useRef<number | null>(null)
   const joinTimeoutRef = useRef<number | null>(null)
   const autoJoinCodeRef = useRef(getJoinCodeFromUrl())
@@ -133,6 +135,7 @@ function App() {
   const handleNetworkMessageRef = useRef<((message: NetworkMessage, senderPeerId?: string) => Promise<void>) | null>(null)
   const joinRoomRef = useRef<
     | ((options?: {
+        joinCode?: string
         roomId?: string
         hostPeerId?: string
         playerName?: string
@@ -140,6 +143,7 @@ function App() {
         passwordHash?: string
         playerId?: string
         showModal?: boolean
+        retryWithinAttempt?: boolean
       }) => Promise<void>)
     | null
   >(null)
@@ -567,6 +571,44 @@ function App() {
     return () => window.clearInterval(timerId)
   }, [joinStatusModal.open, joinStatusModal.phase])
 
+  useEffect(() => {
+    if (!joinStatusModal.open || joinStatusModal.phase !== 'connecting') {
+      return
+    }
+
+    const retryId = window.setInterval(() => {
+      if (peerConnected || joinRetryInFlightRef.current) {
+        return
+      }
+
+      const attempt = joinAttemptRef.current
+      if (!attempt || attempt.cancelled || !attempt.interactive) {
+        return
+      }
+
+      if (Date.now() - attempt.startedAt >= JOIN_REQUEST_TIMEOUT_MS) {
+        return
+      }
+
+      const retry = joinRoomRef.current
+      if (!retry) {
+        return
+      }
+
+      joinRetryInFlightRef.current = true
+      void retry({
+        joinCode: attempt.roomId,
+        playerId: attempt.playerId,
+        showModal: false,
+        retryWithinAttempt: true,
+      }).finally(() => {
+        joinRetryInFlightRef.current = false
+      })
+    }, JOIN_RETRY_INTERVAL_MS)
+
+    return () => window.clearInterval(retryId)
+  }, [joinStatusModal.open, joinStatusModal.phase, peerConnected])
+
   const handleNetworkMessage = useCallback(async (message: NetworkMessage, senderPeerId?: string) => {
     const current = useRoomStore.getState().state
 
@@ -809,7 +851,9 @@ function App() {
     passwordHash?: string
     playerId?: string
     showModal?: boolean
+    retryWithinAttempt?: boolean
   }) => {
+    const retryWithinAttempt = options?.retryWithinAttempt ?? false
     const manualJoinCode = sanitizeJoinCode(options?.joinCode ?? joinForm.joinCode)
     const derivedRoomId = manualJoinCode
     const derivedHostPeerId = manualJoinCode ? `host-${manualJoinCode}` : ''
@@ -835,7 +879,7 @@ function App() {
       return
     }
 
-    if (showModal) {
+    if (showModal && !retryWithinAttempt) {
       setJoinElapsedSeconds(1)
       openJoinStatusModal('connecting', 'Connecting to host...')
     }
@@ -847,15 +891,18 @@ function App() {
       : await createJoinRequest(roomId, playerId, playerName, password)
 
     joinRequestRef.current = joinRequest
-    joinAttemptRef.current = {
-      roomId,
-      playerId,
-      cancelled: false,
-      interactive: showModal,
-      startedAt: Date.now(),
+    if (!retryWithinAttempt) {
+      joinAttemptRef.current = {
+        roomId,
+        playerId,
+        cancelled: false,
+        interactive: showModal,
+        startedAt: Date.now(),
+      }
+      clearJoinTimeout()
     }
-    clearJoinTimeout()
-    if (showModal) {
+
+    if (showModal && !retryWithinAttempt) {
       joinTimeoutRef.current = window.setTimeout(() => {
         const attempt = joinAttemptRef.current
         if (!attempt || attempt.playerId !== playerId || attempt.cancelled) {
@@ -886,6 +933,14 @@ function App() {
 
         const activeAttempt = joinAttemptRef.current
         if (!activeAttempt || activeAttempt.playerId !== playerId || activeAttempt.cancelled) {
+          return
+        }
+
+        if (activeAttempt.interactive) {
+          setStatusText('Join in progress. Retrying automatically...')
+          if (showModal) {
+            openJoinStatusModal('connecting', 'Connection dropped. Retrying automatically...')
+          }
           return
         }
 
