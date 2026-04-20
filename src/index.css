@@ -1,0 +1,107 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+@import 'tailwindcss';
+
+:root {
+  --bg-0: #08141a;
+  --bg-1: #0f2a33;
+  --panel: rgba(12, 30, 38, 0.68);
+  --panel-strong: rgba(8, 22, 28, 0.85);
+  --line: rgba(151, 191, 189, 0.28);
+  --line-strong: rgba(151, 191, 189, 0.55);
+  --text-main: #f2f5f2;
+  --text-soft: #bad2cc;
+  --accent: #ffd166;
+  --accent-alt: #7ce3c1;
+  --danger: #ff8f8f;
+  --glow: 0 0 0 1px rgba(255, 209, 102, 0.32), 0 16px 40px rgba(0, 0, 0, 0.36);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100dvh;
+}
+
+body {
+  margin: 0;
+  font-family: 'Space Grotesk', 'Segoe UI', sans-serif;
+  color: var(--text-main);
+  background:
+    radial-gradient(circle at 16% 12%, rgba(124, 227, 193, 0.2), transparent 36%),
+    radial-gradient(circle at 83% 76%, rgba(255, 209, 102, 0.16), transparent 30%),
+    linear-gradient(150deg, var(--bg-0), var(--bg-1));
+}
+
+.grain::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.03;
+  mix-blend-mode: overlay;
+  background-image:
+    repeating-radial-gradient(circle at 0 0, #fff 0, transparent 1px, transparent 2px, #fff 3px),
+    repeating-conic-gradient(from 0deg at 50% 50%, #000 0deg 10deg, transparent 10deg 20deg);
+  background-size: 220px 220px, 160px 160px;
+}
+
+.mono {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.panel-strong {
+  background: var(--panel-strong);
+  border: 1px solid var(--line-strong);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+.headline {
+  font-size: clamp(2.4rem, 6vw, 5.7rem);
+  letter-spacing: -0.045em;
+  line-height: 0.95;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .reveal {
+    animation: reveal 760ms cubic-bezier(0.21, 0.99, 0.37, 1) both;
+  }
+
+  .float {
+    animation: float 7s ease-in-out infinite;
+  }
+}
+
+@keyframes reveal {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 24px, 0) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes float {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(0, -10px, 0);
+  }
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+}
