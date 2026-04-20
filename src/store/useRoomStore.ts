@@ -13,9 +13,7 @@ interface RoomStore {
   tick: () => void
   createRoom: (input: {
     roomName: string
-    hostName: string
-    password: string
-    initialMinutes: number
+    joinCode: string
     hostPeerId: string
   }) => Promise<RoomState>
   hydrateFromSnapshot: (roomId: string) => Promise<RoomState | null>
@@ -37,11 +35,11 @@ export const useRoomStore = create<RoomStore>((set, get) => ({
   statusText: 'Idle',
   setStatusText: (value) => set({ statusText: value }),
   tick: () => set({ nowMs: Date.now() }),
-  createRoom: async ({ roomName, hostName, password, initialMinutes, hostPeerId }) => {
-    const roomId = nanoid(10).toUpperCase()
+  createRoom: async ({ roomName, joinCode, hostPeerId }) => {
+    const roomId = joinCode
     const hostPlayerId = nanoid(12)
-    const initialTimeMs = Math.max(1, Math.floor(initialMinutes)) * 60_000
-    const passwordHash = await sha256(password)
+    const initialTimeMs = 10 * 60_000
+    const passwordHash = await sha256(joinCode)
 
     const state: RoomState = {
       roomId,
@@ -55,7 +53,7 @@ export const useRoomStore = create<RoomStore>((set, get) => ({
       players: [
         {
           id: hostPlayerId,
-          name: hostName.trim() || 'Host',
+          name: 'Host',
           remainingMs: initialTimeMs,
           connected: true,
           lastPeerId: hostPeerId,

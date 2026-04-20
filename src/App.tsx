@@ -9,6 +9,7 @@ import {
 } from 'react'
 import { nanoid } from 'nanoid'
 import { AnimatePresence, animate, motion } from 'framer-motion'
+import { QRCodeSVG } from 'qrcode.react'
 import { formatMs, resolveRemainingMs, withElapsedCommitted } from './domain/timerEngine'
 import type { NetworkMessage, RoomState, SnapshotEnvelope } from './domain/types'
 import {
@@ -29,6 +30,25 @@ const RECONNECT_ATTEMPT_INTERVAL_MS = 5_000
 const JOIN_REQUEST_TIMEOUT_MS = 15_000
 const JOIN_TIMEOUT_SECONDS = JOIN_REQUEST_TIMEOUT_MS / 1000
 const JOIN_CANCEL_GUARD_TTL_MS = 30_000
+const JOIN_CODE_LENGTH = 8
+const JOIN_CODE_CHARSET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+
+const generateJoinCode = () => {
+  const bytes = new Uint8Array(JOIN_CODE_LENGTH)
+  crypto.getRandomValues(bytes)
+  return Array.from(bytes, (value) => JOIN_CODE_CHARSET[value % JOIN_CODE_CHARSET.length]).join('')
+}
+
+const sanitizeJoinCode = (value: string) =>
+  value.replace(/[^A-Za-z0-9]/g, '').slice(0, JOIN_CODE_LENGTH)
+
+const getJoinCodeFromUrl = () => {
+  if (typeof window === 'undefined') {
+    return ''
+  }
+
+  return sanitizeJoinCode(new URL(window.location.href).searchParams.get('join') ?? '')
+}
 
 const Input = (props: InputHTMLAttributes<HTMLInputElement>) => (
   <input
@@ -70,16 +90,14 @@ function App() {
   const [peerConnected, setPeerConnected] = useState(false)
   const [createForm, setCreateForm] = useState({
     roomName: 'Go Match Room',
-    hostName: 'Host',
-    password: '',
-    initialMinutes: 10,
   })
-  const [joinForm, setJoinForm] = useState({
-    roomId: '',
-    hostPeerId: '',
-    name: 'Player',
-    password: '',
-  })
+  const [joinForm, setJoinForm] = useState(() => ({
+    joinCode: getJoinCodeFromUrl(),
+  }))
+  const [cameraModalOpen, setCameraModalOpen] = useState(false)
+  const [cameraError, setCameraError] = useState<string | null>(null)
+  const [cameraScanning, setCameraScanning] = useState(false)
+  const [copiedShare, setCopiedShare] = useState<'code' | 'link' | null>(null)
   const [pendingInitialMinutes, setPendingInitialMinutes] = useState(10)
   const [localPeerId, setLocalPeerId] = useState('')
   const [hostReconnectDeadlineAt, setHostReconnectDeadlineAt] = useState<number | null>(null)
@@ -98,6 +116,8 @@ function App() {
   const joinRequestRef = useRef<NetworkMessage | null>(null)
   const joinStatusTimerRef = useRef<number | null>(null)
   const joinTimeoutRef = useRef<number | null>(null)
+  const autoJoinCodeRef = useRef(getJoinCodeFromUrl())
+  const autoJoinTriggeredRef = useRef(false)
   const joinAttemptRef = useRef<{
     roomId: string
     playerId: string
@@ -106,6 +126,9 @@ function App() {
     startedAt: number
   } | null>(null)
   const cancelledJoinPlayersRef = useRef<Map<string, number>>(new Map())
+  const cameraVideoRef = useRef<HTMLVideoElement | null>(null)
+  const cameraStreamRef = useRef<MediaStream | null>(null)
+  const cameraScanFrameRef = useRef<number | null>(null)
   const lastHostSignalAtRef = useRef<number>(0)
   const handleNetworkMessageRef = useRef<((message: NetworkMessage, senderPeerId?: string) => Promise<void>) | null>(null)
   const joinRoomRef = useRef<
@@ -139,6 +162,162 @@ function App() {
     setHostReconnectDeadlineAt(null)
     setHostReconnectSecondsLeft(0)
   }, [])
+
+  const createJoinShareLink = useCallback((joinCode: string) => {
+    if (typeof window === 'undefined') {
+      return joinCode
+    }
+
+    const shareUrl = new URL(window.location.href)
+    shareUrl.searchParams.set('join', joinCode)
+    return shareUrl.toString()
+  }, [])
+
+  const copyToClipboard = useCallback(async (value: string, mode: 'code' | 'link') => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value)
+      } else {
+        const textarea = document.createElement('textarea')
+        textarea.value = value
+        textarea.setAttribute('readonly', 'true')
+        textarea.style.position = 'absolute'
+        textarea.style.left = '-9999px'
+        document.body.appendChild(textarea)
+        textarea.select()
+        document.execCommand('copy')
+        document.body.removeChild(textarea)
+      }
+
+      setCopiedShare(mode)
+      setStatusText(mode === 'code' ? 'Join code copied.' : 'Invite link copied.')
+    } catch {
+      setStatusText('Unable to copy automatically. Please copy manually.')
+    }
+  }, [setStatusText])
+
+  const stopCameraScanner = useCallback(() => {
+    if (cameraScanFrameRef.current) {
+      window.cancelAnimationFrame(cameraScanFrameRef.current)
+      cameraScanFrameRef.current = null
+    }
+
+    if (cameraStreamRef.current) {
+      cameraStreamRef.current.getTracks().forEach((track) => track.stop())
+      cameraStreamRef.current = null
+    }
+
+    if (cameraVideoRef.current) {
+      cameraVideoRef.current.srcObject = null
+    }
+
+    setCameraScanning(false)
+  }, [])
+
+  const extractJoinCode = useCallback((rawValue: string) => {
+    const sanitizedRaw = sanitizeJoinCode(rawValue)
+    if (sanitizedRaw.length === JOIN_CODE_LENGTH) {
+      return sanitizedRaw
+    }
+
+    try {
+      const parsed = new URL(rawValue)
+      const fromQuery = sanitizeJoinCode(parsed.searchParams.get('join') ?? '')
+      if (fromQuery.length === JOIN_CODE_LENGTH) {
+        return fromQuery
+      }
+      const fromPath = sanitizeJoinCode(parsed.pathname.split('/').pop() ?? '')
+      if (fromPath.length === JOIN_CODE_LENGTH) {
+        return fromPath
+      }
+    } catch {
+      return ''
+    }
+
+    return ''
+  }, [])
+
+  const startCameraScanner = useCallback(async () => {
+    setCameraError(null)
+
+    const BarcodeDetectorCtor = (window as unknown as {
+      BarcodeDetector?: new (options?: { formats?: string[] }) => {
+        detect: (input: ImageBitmapSource) => Promise<Array<{ rawValue?: string }>>
+      }
+    }).BarcodeDetector
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraError('This device/browser does not support camera access.')
+      return
+    }
+
+    if (!BarcodeDetectorCtor) {
+      setCameraError('QR scanning is not supported in this browser. Please type the code manually.')
+      return
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: 'environment' },
+        },
+        audio: false,
+      })
+
+      cameraStreamRef.current = stream
+      const video = cameraVideoRef.current
+      if (!video) {
+        setCameraError('Camera preview is unavailable.')
+        stopCameraScanner()
+        return
+      }
+
+      video.srcObject = stream
+      await video.play()
+      setCameraScanning(true)
+
+      const detector = new BarcodeDetectorCtor({ formats: ['qr_code'] })
+
+      const scanLoop = async () => {
+        const activeVideo = cameraVideoRef.current
+        if (!activeVideo || activeVideo.readyState < 2) {
+          cameraScanFrameRef.current = window.requestAnimationFrame(() => {
+            void scanLoop()
+          })
+          return
+        }
+
+        try {
+          const barcodes = await detector.detect(activeVideo as unknown as ImageBitmapSource)
+          const matched = barcodes
+            .map((barcode) => barcode.rawValue ?? '')
+            .map((value) => extractJoinCode(value))
+            .find((value) => value.length === JOIN_CODE_LENGTH)
+
+          if (matched) {
+            setJoinForm((prev) => ({ ...prev, joinCode: matched }))
+            setStatusText('Join code captured from camera.')
+            setCameraModalOpen(false)
+            stopCameraScanner()
+            return
+          }
+        } catch {
+          setCameraError('Unable to scan this frame. Keep the code in focus and try again.')
+        }
+
+        cameraScanFrameRef.current = window.requestAnimationFrame(() => {
+          void scanLoop()
+        })
+      }
+
+      cameraScanFrameRef.current = window.requestAnimationFrame(() => {
+        void scanLoop()
+      })
+    } catch {
+      setCameraError('Camera permission was denied or unavailable.')
+      stopCameraScanner()
+    }
+  }, [extractJoinCode, setStatusText, stopCameraScanner])
 
   const forceLeaveFromTimeout = useCallback((reason: string) => {
     service.cleanup()
@@ -327,6 +506,15 @@ function App() {
   }, [])
 
   useEffect(() => {
+    if (!copiedShare) {
+      return
+    }
+
+    const resetId = window.setTimeout(() => setCopiedShare(null), 1300)
+    return () => window.clearTimeout(resetId)
+  }, [copiedShare])
+
+  useEffect(() => {
     const id = setInterval(() => tick(), 250)
     return () => clearInterval(id)
   }, [tick])
@@ -358,8 +546,9 @@ function App() {
       if (joinTimeoutRef.current) {
         window.clearTimeout(joinTimeoutRef.current)
       }
+      stopCameraScanner()
     }
-  }, [])
+  }, [stopCameraScanner])
 
   useEffect(() => {
     if (!joinStatusModal.open || joinStatusModal.phase !== 'connecting') {
@@ -560,19 +749,59 @@ function App() {
   }, [applyHostAction, clearHostReconnectWait, clearJoinTimeout, leaveRoom, markJoinCancelled, markParticipantDisconnected, openJoinStatusModal, removeParticipantFromHostState, setStateFromHost, setStatusText, showJoinSuccessAndAutoClose, wasJoinCancelledRecently])
 
   const createHostRoom = async () => {
-    const hostPeerId = `host-${nanoid(8)}`
-    service.createHost(hostPeerId, handleNetworkMessage, setStatusText)
-    const created = await createRoom({
-      ...createForm,
-      hostPeerId,
-      initialMinutes: Number(createForm.initialMinutes),
-    })
-    setPendingInitialMinutes(Math.max(1, Math.round(created.initialTimeMs / 60_000)))
-    setLocalPeerId(hostPeerId)
-    setPeerConnected(false)
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const joinCode = generateJoinCode()
+      const hostPeerId = `host-${joinCode}`
+
+      const hostReady = await new Promise<boolean>((resolve) => {
+        let settled = false
+        const settle = (value: boolean) => {
+          if (settled) {
+            return
+          }
+          settled = true
+          resolve(value)
+        }
+
+        const timeoutId = window.setTimeout(() => settle(false), 2500)
+
+        service.createHost(hostPeerId, handleNetworkMessage, (status) => {
+          setStatusText(status)
+          if (status.startsWith('Host ready as')) {
+            window.clearTimeout(timeoutId)
+            settle(true)
+            return
+          }
+
+          const statusLower = status.toLowerCase()
+          if (statusLower.includes('taken') || statusLower.includes('unavailable-id')) {
+            window.clearTimeout(timeoutId)
+            settle(false)
+          }
+        })
+      })
+
+      if (!hostReady) {
+        continue
+      }
+
+      const created = await createRoom({
+        roomName: createForm.roomName,
+        joinCode,
+        hostPeerId,
+      })
+      setJoinForm({ joinCode })
+      setPendingInitialMinutes(Math.max(1, Math.round(created.initialTimeMs / 60_000)))
+      setLocalPeerId(hostPeerId)
+      setPeerConnected(false)
+      return
+    }
+
+    setStatusText('Unable to allocate a unique join code. Please try again.')
   }
 
   const joinRoom = useCallback(async (options?: {
+    joinCode?: string
     roomId?: string
     hostPeerId?: string
     playerName?: string
@@ -581,24 +810,27 @@ function App() {
     playerId?: string
     showModal?: boolean
   }) => {
-    const roomId = (options?.roomId ?? joinForm.roomId).trim().toUpperCase()
-    const hostPeerId = (options?.hostPeerId ?? joinForm.hostPeerId).trim()
-    const playerName = (options?.playerName ?? joinForm.name).trim() || 'Player'
-    const password = options?.password ?? joinForm.password
+    const manualJoinCode = sanitizeJoinCode(options?.joinCode ?? joinForm.joinCode)
+    const derivedRoomId = manualJoinCode
+    const derivedHostPeerId = manualJoinCode ? `host-${manualJoinCode}` : ''
+    const roomId = (options?.roomId ?? derivedRoomId).trim()
+    const hostPeerId = (options?.hostPeerId ?? derivedHostPeerId).trim()
+    const playerName = (options?.playerName ?? 'Player').trim() || 'Player'
+    const password = options?.password ?? manualJoinCode
     const showModal = options?.showModal ?? true
 
     if (!roomId || !hostPeerId) {
-      setStatusText('Missing room ID or host peer ID.')
+      setStatusText('Missing join code.')
       if (showModal) {
-        openJoinStatusModal('error', 'Missing room ID or host peer ID.')
+        openJoinStatusModal('error', 'Please enter a valid 8-character join code.')
       }
       return
     }
 
-    if (!options?.passwordHash && !password) {
-      setStatusText('Password is required to join.')
+    if (!options?.passwordHash && manualJoinCode.length !== JOIN_CODE_LENGTH) {
+      setStatusText('Join code must be 8 characters.')
       if (showModal) {
-        openJoinStatusModal('error', 'Password is required to join.')
+        openJoinStatusModal('error', 'Join code must be exactly 8 characters.')
       }
       return
     }
@@ -671,10 +903,12 @@ function App() {
         openJoinStatusModal('error', status)
       }
     })
-  }, [abortJoinAttempt, beginHostReconnectWait, clearHostReconnectWait, clearJoinTimeout, handleNetworkMessage, joinForm.hostPeerId, joinForm.name, joinForm.password, joinForm.roomId, markJoinCancelled, openJoinStatusModal, setStatusText])
+  }, [abortJoinAttempt, beginHostReconnectWait, clearHostReconnectWait, clearJoinTimeout, handleNetworkMessage, joinForm.joinCode, markJoinCancelled, openJoinStatusModal, setStatusText])
 
   const joinProgressSeconds = Math.max(1, Math.min(JOIN_TIMEOUT_SECONDS, joinElapsedSeconds || 1))
   const joinProgressPercent = (joinProgressSeconds / JOIN_TIMEOUT_SECONDS) * 100
+  const hostJoinCode = state?.role === 'host' ? state.roomId : ''
+  const hostShareLink = hostJoinCode ? createJoinShareLink(hostJoinCode) : ''
 
   useEffect(() => {
     handleNetworkMessageRef.current = handleNetworkMessage
@@ -685,10 +919,39 @@ function App() {
   }, [joinRoom])
 
   useEffect(() => {
+    if (autoJoinTriggeredRef.current || state) {
+      return
+    }
+
+    const autoJoinCode = autoJoinCodeRef.current
+    if (autoJoinCode.length !== JOIN_CODE_LENGTH) {
+      return
+    }
+
+    autoJoinTriggeredRef.current = true
+    setStatusText('Join code detected from link. Auto joining...')
+    void joinRoom({ joinCode: autoJoinCode, showModal: true })
+  }, [joinRoom, setStatusText, state])
+
+  useEffect(() => {
     if (!state) {
       return
     }
     localStorage.setItem('lan-timer:last-room-id', state.roomId)
+  }, [state])
+
+  useEffect(() => {
+    if (!state || typeof window === 'undefined') {
+      return
+    }
+
+    const currentUrl = new URL(window.location.href)
+    if (!currentUrl.searchParams.has('join')) {
+      return
+    }
+
+    currentUrl.searchParams.delete('join')
+    window.history.replaceState({}, '', currentUrl.toString())
   }, [state])
 
   useEffect(() => {
@@ -763,6 +1026,10 @@ function App() {
     let cancelled = false
 
     const tryRecover = async () => {
+      if (autoJoinCodeRef.current.length === JOIN_CODE_LENGTH) {
+        return
+      }
+
       const lastRoomId = localStorage.getItem('lan-timer:last-room-id')
       if (!lastRoomId) {
         return
@@ -783,9 +1050,7 @@ function App() {
 
       setJoinForm((prev) => ({
         ...prev,
-        roomId: recovered.roomId,
-        hostPeerId: recovered.hostPeerId,
-        name: recoveredName,
+        joinCode: recovered.roomId,
       }))
 
       if (recovered.role === 'host') {
@@ -921,31 +1186,13 @@ function App() {
                   value={createForm.roomName}
                   onChange={(event) => setCreateForm((prev) => ({ ...prev, roomName: event.target.value }))}
                 />
-                <Input
-                  placeholder="Host name"
-                  value={createForm.hostName}
-                  onChange={(event) => setCreateForm((prev) => ({ ...prev, hostName: event.target.value }))}
-                />
-                <Input
-                  type="password"
-                  placeholder="Password"
-                  value={createForm.password}
-                  onChange={(event) => setCreateForm((prev) => ({ ...prev, password: event.target.value }))}
-                />
-                <Input
-                  type="number"
-                  min={1}
-                  max={180}
-                  placeholder="Initial minutes"
-                  value={String(createForm.initialMinutes)}
-                  onChange={(event) =>
-                    setCreateForm((prev) => ({ ...prev, initialMinutes: Number(event.target.value) }))
-                  }
-                />
+                <p className="mono rounded-xl border border-amber-200/35 bg-amber-200/10 px-3 py-2 text-[11px] uppercase tracking-[0.14em] text-amber-100">
+                  A secure 8-character join code will be generated automatically.
+                </p>
                 <Button
                   className="w-full"
                   onClick={() => void createHostRoom()}
-                  disabled={!createForm.password.trim()}
+                  disabled={!createForm.roomName.trim()}
                 >
                   Create as Host
                 </Button>
@@ -956,32 +1203,32 @@ function App() {
               <h2 className="text-xl font-semibold">Join Room</h2>
               <div className="mt-4 space-y-3">
                 <Input
-                  placeholder="Room ID"
-                  value={joinForm.roomId}
+                  placeholder="Enter 8-character join code"
+                  maxLength={JOIN_CODE_LENGTH}
+                  value={joinForm.joinCode}
                   onChange={(event) =>
-                    setJoinForm((prev) => ({ ...prev, roomId: event.target.value.toUpperCase() }))
+                    setJoinForm((prev) => ({
+                      ...prev,
+                      joinCode: sanitizeJoinCode(event.target.value),
+                    }))
                   }
                 />
-                <Input
-                  placeholder="Host Peer ID"
-                  value={joinForm.hostPeerId}
-                  onChange={(event) => setJoinForm((prev) => ({ ...prev, hostPeerId: event.target.value }))}
-                />
-                <Input
-                  placeholder="Your name"
-                  value={joinForm.name}
-                  onChange={(event) => setJoinForm((prev) => ({ ...prev, name: event.target.value }))}
-                />
-                <Input
-                  type="password"
-                  placeholder="Room password"
-                  value={joinForm.password}
-                  onChange={(event) => setJoinForm((prev) => ({ ...prev, password: event.target.value }))}
-                />
+                <p className="mono text-[11px] uppercase tracking-[0.12em] text-[#b7d1c9]">
+                  Tip: paste works with spaces or symbols; they will be removed automatically.
+                </p>
+                <Button
+                  className="w-full"
+                  onClick={() => {
+                    setCameraModalOpen(true)
+                    void startCameraScanner()
+                  }}
+                >
+                  Use Camera to Scan Code
+                </Button>
                 <Button
                   className="w-full"
                   onClick={() => void joinRoom()}
-                  disabled={!joinForm.password || !joinForm.hostPeerId || !joinForm.roomId}
+                  disabled={joinForm.joinCode.trim().length !== JOIN_CODE_LENGTH}
                 >
                   Join as Participant
                 </Button>
@@ -997,7 +1244,7 @@ function App() {
                 <div>
                   <h2 className="text-2xl font-semibold">{state.roomName}</h2>
                   <p className="mono mt-1 text-xs text-[#b7d1c9]">
-                    Room {state.roomId} | Host Peer {state.hostPeerId}
+                    Join Code {state.roomId} | Host Peer {state.hostPeerId}
                   </p>
                 </div>
                 <div className="flex gap-2">
@@ -1072,6 +1319,39 @@ function App() {
             </article>
 
             <aside className="panel reveal rounded-2xl p-5 [animation-delay:80ms]">
+              {isHost && (
+                <div className="mb-4 rounded-2xl border border-emerald-200/30 bg-emerald-200/10 p-4">
+                  <p className="mono text-[11px] uppercase tracking-[0.16em] text-emerald-100">Share Room</p>
+                  <p className="mono mt-2 text-3xl tracking-[0.08em] text-white">{hostJoinCode}</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button
+                      className="border-emerald-200/60 bg-emerald-200/15"
+                      onClick={() => void copyToClipboard(hostJoinCode, 'code')}
+                    >
+                      {copiedShare === 'code' ? 'Code Copied' : 'Copy Code'}
+                    </Button>
+                    <Button
+                      className="border-emerald-200/60 bg-emerald-200/15"
+                      onClick={() => void copyToClipboard(hostShareLink, 'link')}
+                    >
+                      {copiedShare === 'link' ? 'Link Copied' : 'Copy Invite Link'}
+                    </Button>
+                  </div>
+                  <div className="mt-4 inline-flex rounded-2xl border border-white/20 bg-white p-3">
+                    <QRCodeSVG
+                      value={hostShareLink || hostJoinCode}
+                      size={124}
+                      bgColor="transparent"
+                      fgColor="#0f172a"
+                      title="Scan to join room"
+                    />
+                  </div>
+                  <p className="mono mt-2 text-[11px] uppercase tracking-[0.12em] text-[#d2e4de]">
+                    Scan QR to open join link with code prefilled.
+                  </p>
+                </div>
+              )}
+
               <h3 className="text-xl font-semibold">Control Deck</h3>
               <p className="mono mt-1 text-xs text-[#b7d1c9]">{statusText}</p>
               {hostReconnectDeadlineAt && (
@@ -1135,6 +1415,65 @@ function App() {
       </div>
 
       <AnimatePresence>
+        {cameraModalOpen && !state && (
+          <motion.div
+            className="fixed inset-0 z-40 flex items-center justify-center bg-[#041014]/82 p-5 backdrop-blur-md"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <motion.div
+              className="w-full max-w-md rounded-3xl border border-emerald-300/35 bg-[#061a23]/94 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.58)]"
+              initial={{ opacity: 0, y: 18, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 12, scale: 0.98 }}
+              transition={{ type: 'spring', stiffness: 260, damping: 25 }}
+              role="dialog"
+              aria-modal="true"
+              aria-label="Scan join code"
+            >
+              <p className="mono text-[11px] uppercase tracking-[0.18em] text-emerald-100">Camera Scan</p>
+              <h2 className="mt-2 text-2xl font-semibold text-white">Point camera at room QR</h2>
+              <p className="mt-2 text-sm text-[#d2e4de]">
+                Permission prompt will appear once. Keep the QR code inside frame to auto-fill join code.
+              </p>
+
+              <div className="mt-4 overflow-hidden rounded-2xl border border-white/20 bg-black/40">
+                <video
+                  ref={cameraVideoRef}
+                  className="h-64 w-full object-cover"
+                  playsInline
+                  muted
+                  autoPlay
+                />
+              </div>
+
+              {cameraScanning && (
+                <p className="mono mt-3 text-xs uppercase tracking-[0.12em] text-emerald-200">Scanning for QR code...</p>
+              )}
+
+              {cameraError && (
+                <p className="mono mt-3 rounded-lg border border-rose-300/50 bg-rose-200/10 px-3 py-2 text-xs text-rose-100">
+                  {cameraError}
+                </p>
+              )}
+
+              <div className="mt-5 flex justify-end gap-2">
+                <Button
+                  className="border-rose-200/60 text-rose-100"
+                  onClick={() => {
+                    stopCameraScanner()
+                    setCameraModalOpen(false)
+                    setCameraError(null)
+                  }}
+                >
+                  Close
+                </Button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+
         {joinStatusModal.open && !state && (
           <motion.div
             className="fixed inset-0 z-40 flex items-center justify-center bg-[#041014]/70 p-5 backdrop-blur-md"
