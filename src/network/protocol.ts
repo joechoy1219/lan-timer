@@ -1,6 +1,8 @@
 import { nanoid } from 'nanoid'
 import type {
+  ControlRejectReason,
   ControlActionType,
+  ControlRejected,
   Heartbeat,
   JoinRequest,
   ParticipantLeave,
@@ -75,6 +77,20 @@ export const createParticipantLeave = (roomId: string, playerId: string): Partic
   sentAt: Date.now(),
 })
 
+export const createControlRejected = (
+  roomId: string,
+  action: ControlActionType,
+  reason: ControlRejectReason,
+  message: string,
+): ControlRejected => ({
+  type: 'CONTROL_REJECTED',
+  roomId,
+  action,
+  reason,
+  message,
+  sentAt: Date.now(),
+})
+
 export const createSignedControl = async (
   roomId: string,
   fromPlayerId: string,
@@ -104,7 +120,16 @@ export const verifySignedControl = async (
   message: SignedControl,
   passwordHash: string,
 ) => {
-  const { signature, ...rest } = message
-  const expected = await signPayload(rest, passwordHash)
+  const expectedPayload = {
+    roomId: message.roomId,
+    fromPlayerId: message.fromPlayerId,
+    seq: message.seq,
+    action: message.action,
+    payload: message.payload,
+    sentAt: message.sentAt,
+    id: message.id,
+  }
+  const expected = await signPayload(expectedPayload, passwordHash)
+  const { signature } = message
   return expected === signature
 }

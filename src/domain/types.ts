@@ -16,6 +16,12 @@ export interface PlayerState {
   lastPeerId?: string
 }
 
+export interface RoomTimelineEvent {
+  id: string
+  message: string
+  at: number
+}
+
 export interface RoomState {
   roomId: string
   roomName: string
@@ -26,6 +32,12 @@ export interface RoomState {
   passwordHash: string
   initialTimeMs: number
   players: PlayerState[]
+  timeline: RoomTimelineEvent[]
+  turnOrder: string[]
+  turnIndex: number
+  phase: 'lobby' | 'running' | 'paused' | 'finished'
+  round: number
+  lastTurnSwitchedAt: number | null
   activePlayerId: string | null
   isRunning: boolean
   globalPaused: boolean
@@ -77,6 +89,23 @@ export interface JoinRejected {
   reason: string
 }
 
+export type ControlRejectReason =
+  | 'ROOM_MISMATCH'
+  | 'STALE_SEQ'
+  | 'INVALID_SIGNATURE'
+  | 'UNKNOWN_ACTOR'
+  | 'NOT_ALLOWED'
+  | 'INVALID_PAYLOAD'
+
+export interface ControlRejected {
+  type: 'CONTROL_REJECTED'
+  roomId: string
+  action: ControlActionType
+  reason: ControlRejectReason
+  message: string
+  sentAt: number
+}
+
 export interface Heartbeat {
   type: 'HEARTBEAT'
   roomId: string
@@ -103,14 +132,19 @@ export type NetworkMessage =
   | JoinRequest
   | JoinAccepted
   | JoinRejected
+  | ControlRejected
   | Heartbeat
   | ParticipantLeave
   | PeerLeftLocal
 
 export type ControlActionType =
   | 'START_TIMER'
+  | 'START_ROUND'
+  | 'END_TURN'
   | 'PAUSE_TIMER'
   | 'SWITCH_ACTIVE'
+  | 'SET_TURN_ORDER'
+  | 'FORCE_NEXT'
   | 'RESET_ALL'
   | 'SET_INITIAL_TIME'
   | 'GLOBAL_PAUSE'

@@ -4,15 +4,13 @@ import {
   useMemo,
   useRef,
   useState,
-  type ButtonHTMLAttributes,
-  type InputHTMLAttributes,
 } from 'react'
 import { nanoid } from 'nanoid'
 import { AnimatePresence, animate, motion } from 'framer-motion'
-import { QRCodeSVG } from 'qrcode.react'
-import { formatMs, resolveRemainingMs, withElapsedCommitted } from './domain/timerEngine'
+import { resolveRemainingMs, withElapsedCommitted } from './domain/timerEngine'
 import type { NetworkMessage, RoomState, SnapshotEnvelope } from './domain/types'
 import {
+  createControlRejected,
   createHeartbeat,
   createJoinRequest,
   createJoinRequestWithHash,
@@ -23,6 +21,12 @@ import {
 } from './network/protocol'
 import { PeerRoomService } from './network/peerService'
 import { useRoomStore } from './store/useRoomStore'
+import { Button } from './components/ui/Button'
+import { Input } from './components/ui/Input'
+import { PlayersPanel } from './components/live/PlayersPanel'
+import { ControlDeck } from './components/live/ControlDeck'
+import { ParticipantTurnView } from './components/live/ParticipantTurnView'
+import { HostLobbySetup } from './components/live/HostLobbySetup'
 const service = new PeerRoomService()
 const HOST_RECONNECT_TIMEOUT_MS = 60_000
 const HOST_SIGNAL_LOSS_THRESHOLD_MS = 5_000
@@ -31,6 +35,8 @@ const JOIN_REQUEST_TIMEOUT_MS = 15_000
 const JOIN_RETRY_INTERVAL_MS = 1_800
 const JOIN_TIMEOUT_SECONDS = JOIN_REQUEST_TIMEOUT_MS / 1000
 const JOIN_CANCEL_GUARD_TTL_MS = 30_000
+const ACTIVE_PLAYER_DISCONNECT_SKIP_MS = 4_000
+const TIMELINE_LIMIT = 24
 const JOIN_CODE_LENGTH = 8
 const JOIN_CODE_CHARSET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
 
@@ -51,27 +57,134 @@ const getJoinCodeFromUrl = () => {
   return sanitizeJoinCode(new URL(window.location.href).searchParams.get('join') ?? '')
 }
 
-const Input = (props: InputHTMLAttributes<HTMLInputElement>) => (
-  <input
-    {...props}
-    className="mono w-full rounded-xl border border-white/20 bg-black/20 px-3 py-2 text-sm text-white outline-none transition focus:border-amber-300"
-  />
-)
-
-const Button = ({ children, className, ...props }: ButtonHTMLAttributes<HTMLButtonElement>) => (
-  <button
-    {...props}
-    className={`mono rounded-xl border border-white/30 bg-white/10 px-3 py-2 text-xs tracking-wide text-white transition hover:border-amber-300 hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-40 ${className ?? ''}`}
-  >
-    {children}
-  </button>
-)
-
 const mergeParticipantView = (snapshot: SnapshotEnvelope, current: RoomState | null): RoomState => ({
   ...snapshot.state,
   role: current?.role ?? 'participant',
   localPlayerId: current?.localPlayerId ?? snapshot.state.localPlayerId,
 })
+
+const clampTurnIndex = (state: RoomState) =>
+  Math.max(0, Math.min(state.turnIndex, Math.max(0, state.turnOrder.length - 1)))
+
+const getTurnContext = (state: RoomState) => {
+  if (state.turnOrder.length === 0) {
+    return {
+      previousPlayerId: null,
+      currentPlayerId: null,
+      nextPlayerId: null,
+    }
+  }
+
+  const currentIndex = clampTurnIndex(state)
+  const previousIndex = (currentIndex - 1 + state.turnOrder.length) % state.turnOrder.length
+  const nextIndex = (currentIndex + 1) % state.turnOrder.length
+
+  return {
+    previousPlayerId: state.turnOrder[previousIndex] ?? null,
+    currentPlayerId: state.turnOrder[currentIndex] ?? null,
+    nextPlayerId: state.turnOrder[nextIndex] ?? null,
+  }
+}
+
+const appendTimeline = (state: RoomState, message: string, at = Date.now()): RoomState => ({
+  ...state,
+  timeline: [
+    {
+      id: `app-${state.seq + 1}-${at}`,
+      message,
+      at,
+    },
+    ...state.timeline,
+  ].slice(0, TIMELINE_LIMIT),
+})
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+
+const validateControlPayload = (
+  action: Parameters<typeof createSignedControl>[3],
+  payload: Record<string, unknown>,
+): string | null => {
+  switch (action) {
+    case 'SET_TURN_ORDER': {
+      if (!Array.isArray(payload.turnOrder) || payload.turnOrder.some((id) => typeof id !== 'string')) {
+        return 'turnOrder must be an array of player ids.'
+      }
+      if (payload.turnOrder.length < 1) {
+        return 'turnOrder cannot be empty.'
+      }
+      return null
+    }
+    case 'SWITCH_ACTIVE': {
+      if (typeof payload.nextPlayerId !== 'string' || payload.nextPlayerId.length < 1) {
+        return 'nextPlayerId is required.'
+      }
+      return null
+    }
+    case 'SET_INITIAL_TIME': {
+      if (typeof payload.initialTimeMs !== 'number' || !Number.isFinite(payload.initialTimeMs)) {
+        return 'initialTimeMs must be a finite number.'
+      }
+      return null
+    }
+    case 'KICK_PLAYER': {
+      if (typeof payload.targetId !== 'string' || payload.targetId.length < 1) {
+        return 'targetId is required.'
+      }
+      return null
+    }
+    case 'START_TIMER': {
+      if (payload.playerId !== undefined && typeof payload.playerId !== 'string') {
+        return 'playerId must be a string when provided.'
+      }
+      return null
+    }
+    case 'RENAME_SELF': {
+      if (typeof payload.name !== 'string' || payload.name.trim().length < 1) {
+        return 'name is required for rename.'
+      }
+      return null
+    }
+    default:
+      return null
+  }
+}
+
+const validateControlAuthorization = (
+  state: RoomState,
+  actorId: string,
+  action: Parameters<typeof createSignedControl>[3],
+): string | null => {
+  const isHostActor = actorId === state.hostPlayerId
+  const hostOnlyActions: Parameters<typeof createSignedControl>[3][] = [
+    'START_TIMER',
+    'START_ROUND',
+    'PAUSE_TIMER',
+    'SWITCH_ACTIVE',
+    'SET_TURN_ORDER',
+    'FORCE_NEXT',
+    'RESET_ALL',
+    'SET_INITIAL_TIME',
+    'GLOBAL_PAUSE',
+    'GLOBAL_RESUME',
+    'KICK_PLAYER',
+  ]
+
+  if (hostOnlyActions.includes(action) && !isHostActor) {
+    return 'Only host can execute this action.'
+  }
+
+  if (action === 'END_TURN') {
+    if (state.phase === 'lobby') {
+      return 'Round has not started yet.'
+    }
+    if (state.activePlayerId !== actorId) {
+      return 'Only the active player can end this turn.'
+    }
+  }
+
+  return null
+}
 
 function App() {
   const {
@@ -131,6 +244,8 @@ function App() {
   const cameraVideoRef = useRef<HTMLVideoElement | null>(null)
   const cameraStreamRef = useRef<MediaStream | null>(null)
   const cameraScanFrameRef = useRef<number | null>(null)
+  const activeDisconnectedAtRef = useRef<number | null>(null)
+  const autoAdvanceInFlightRef = useRef(false)
   const lastHostSignalAtRef = useRef<number>(0)
   const handleNetworkMessageRef = useRef<((message: NetworkMessage, senderPeerId?: string) => Promise<void>) | null>(null)
   const joinRoomRef = useRef<
@@ -348,16 +463,36 @@ function App() {
     }
 
     const wasActive = committed.activePlayerId === departingPlayerId
-    const nextState: RoomState = {
+    const nextTurnOrder = committed.turnOrder.filter((playerId) => playerId !== departingPlayerId)
+    const fallbackTurnOrder = nextTurnOrder.length > 0 ? nextTurnOrder : [committed.hostPlayerId]
+    const currentIndex = Math.max(0, Math.min(committed.turnIndex, Math.max(0, committed.turnOrder.length - 1)))
+    const nextIndex = fallbackTurnOrder.length === 0
+      ? 0
+      : wasActive
+        ? currentIndex % fallbackTurnOrder.length
+        : Math.max(0, Math.min(currentIndex, fallbackTurnOrder.length - 1))
+
+    const nextStateBase: RoomState = {
       ...committed,
       seq: committed.seq + 1,
       updatedAt: now,
       players: committed.players.filter((player) => player.id !== departingPlayerId),
-      activePlayerId: wasActive ? null : committed.activePlayerId,
+      turnOrder: fallbackTurnOrder,
+      turnIndex: nextIndex,
+      activePlayerId: fallbackTurnOrder[nextIndex] ?? null,
+      phase: wasActive ? 'paused' : committed.phase,
       isRunning: wasActive ? false : committed.isRunning,
       lastStartedAt: wasActive ? null : committed.lastStartedAt,
       globalPaused: wasActive ? true : committed.globalPaused,
+      lastTurnSwitchedAt: wasActive ? now : committed.lastTurnSwitchedAt,
     }
+    const nextState = appendTimeline(
+      nextStateBase,
+      wasActive
+        ? `${departing.name} left during active turn. Match paused for safety.`
+        : `${departing.name} left the room.`,
+      now,
+    )
 
     setStateFromHost(nextState)
     service.broadcast(createSnapshot(nextState))
@@ -378,7 +513,7 @@ function App() {
       return
     }
 
-    const nextState: RoomState = {
+    const nextStateBase: RoomState = {
       ...current,
       seq: current.seq + 1,
       updatedAt: Date.now(),
@@ -391,6 +526,7 @@ function App() {
           : player,
       ),
     }
+    const nextState = appendTimeline(nextStateBase, `${participant.name} disconnected.`, Date.now())
 
     setStateFromHost(nextState)
     service.broadcast(createSnapshot(nextState))
@@ -540,6 +676,83 @@ function App() {
     return () => clearInterval(id)
   }, [state])
 
+  useEffect(() => {
+    if (!state || state.role !== 'host') {
+      activeDisconnectedAtRef.current = null
+      return
+    }
+
+    const id = window.setInterval(() => {
+      if (autoAdvanceInFlightRef.current) {
+        return
+      }
+
+      const latest = useRoomStore.getState().state
+      if (!latest || latest.role !== 'host') {
+        activeDisconnectedAtRef.current = null
+        return
+      }
+
+      if (
+        latest.phase === 'lobby'
+        || latest.globalPaused
+        || !latest.isRunning
+        || !latest.activePlayerId
+      ) {
+        activeDisconnectedAtRef.current = null
+        return
+      }
+
+      const active = latest.players.find((player) => player.id === latest.activePlayerId)
+      if (!active) {
+        activeDisconnectedAtRef.current = null
+        return
+      }
+
+      const now = Date.now()
+      const activeRemainingMs = resolveRemainingMs(active, latest, now)
+      const shouldSkipForTimeout = activeRemainingMs <= 0
+      const shouldSkipForDisconnect = !active.connected
+        && activeDisconnectedAtRef.current !== null
+        && now - activeDisconnectedAtRef.current >= ACTIVE_PLAYER_DISCONNECT_SKIP_MS
+
+      if (shouldSkipForTimeout || shouldSkipForDisconnect) {
+        autoAdvanceInFlightRef.current = true
+        void applyHostAction({
+          type: 'FORCE_NEXT',
+          actorId: latest.hostPlayerId,
+          now,
+        }).then((next) => {
+          if (!next) {
+            return
+          }
+
+          service.broadcast(createSnapshot(next))
+          if (shouldSkipForTimeout) {
+            setStatusText(`${active.name} reached 00:00. Turn advanced automatically.`)
+          } else {
+            setStatusText(`${active.name} disconnected. Turn advanced automatically.`)
+          }
+        }).finally(() => {
+          autoAdvanceInFlightRef.current = false
+          activeDisconnectedAtRef.current = null
+        })
+        return
+      }
+
+      if (!active.connected) {
+        if (!activeDisconnectedAtRef.current) {
+          activeDisconnectedAtRef.current = now
+        }
+        return
+      }
+
+      activeDisconnectedAtRef.current = null
+    }, 300)
+
+    return () => window.clearInterval(id)
+  }, [applyHostAction, setStatusText, state])
+
   useEffect(() => () => service.cleanup(), [])
 
   useEffect(() => {
@@ -644,7 +857,7 @@ function App() {
         return
       }
 
-      const nextState = exists
+      const nextStateBase = exists
         ? {
             ...current,
             seq: current.seq + 1,
@@ -674,7 +887,18 @@ function App() {
                 lastPeerId: senderPeerId,
               },
             ],
+            turnOrder: [...current.turnOrder, message.playerId],
+            activePlayerId: current.activePlayerId ?? current.turnOrder[0] ?? message.playerId,
           }
+      const nextState = appendTimeline(
+        nextStateBase,
+        isReconnect
+          ? `${message.playerName.slice(0, 24)} reconnected.`
+          : exists
+            ? `${message.playerName.slice(0, 24)} synced.`
+            : `${message.playerName.slice(0, 24)} joined the room.`,
+        Date.now(),
+      )
 
       setStateFromHost(nextState)
       setStatusText(
@@ -752,6 +976,11 @@ function App() {
       return
     }
 
+    if (message.type === 'CONTROL_REJECTED') {
+      setStatusText(`Control rejected (${message.reason}): ${message.message}`)
+      return
+    }
+
     if (message.type === 'STATE_SNAPSHOT') {
       lastHostSignalAtRef.current = Date.now()
       clearHostReconnectWait()
@@ -769,12 +998,45 @@ function App() {
     }
 
     if (message.type === 'CONTROL_REQUEST' && current?.role === 'host') {
-      if (message.roomId !== current.roomId || message.seq <= current.seq) {
+      const reject = (reason: Parameters<typeof createControlRejected>[2], detail: string) => {
+        setStatusText(`Rejected ${message.action}: ${detail}`)
+        if (senderPeerId) {
+          service.sendToPeer(senderPeerId, createControlRejected(current.roomId, message.action, reason, detail))
+        }
+      }
+
+      if (message.roomId !== current.roomId) {
+        reject('ROOM_MISMATCH', 'Control was sent to a different room.')
         return
       }
+
+      if (message.seq <= current.seq) {
+        reject('STALE_SEQ', 'Control sequence is stale.')
+        return
+      }
+
+      const actor = current.players.find((player) => player.id === message.fromPlayerId)
+      if (!actor) {
+        reject('UNKNOWN_ACTOR', 'Request actor is not in this room.')
+        return
+      }
+
       const valid = await verifySignedControl(message, current.passwordHash)
       if (!valid) {
-        setStatusText('Rejected unsigned control request.')
+        reject('INVALID_SIGNATURE', 'Signature validation failed.')
+        return
+      }
+
+      const payload = isRecord(message.payload) ? message.payload : {}
+      const payloadError = validateControlPayload(message.action, payload)
+      if (payloadError) {
+        reject('INVALID_PAYLOAD', payloadError)
+        return
+      }
+
+      const authError = validateControlAuthorization(current, message.fromPlayerId, message.action)
+      if (authError) {
+        reject('NOT_ALLOWED', authError)
         return
       }
 
@@ -782,7 +1044,7 @@ function App() {
         type: message.action,
         actorId: message.fromPlayerId,
         now: Date.now(),
-        payload: message.payload,
+        payload,
       })
       if (next) {
         service.broadcast(createSnapshot(next))
@@ -1152,7 +1414,7 @@ function App() {
     }
   }, [hydrateFromSnapshot, setStatusText, setStateFromHost])
 
-  const sendControl = async (
+  const sendControl = useCallback(async (
     action: Parameters<typeof createSignedControl>[3],
     payload: Record<string, unknown> = {},
   ) => {
@@ -1188,7 +1450,7 @@ function App() {
       current.passwordHash,
     )
     service.sendToHost(request)
-  }
+  }, [applyHostAction, nowMs, reconnectBlocked, setStatusText])
 
   const players = useMemo(() => {
     if (!state) {
@@ -1199,6 +1461,50 @@ function App() {
       displayMs: resolveRemainingMs(player, state, nowMs),
     }))
   }, [state, nowMs])
+
+  const orderedPlayers = useMemo(() => {
+    if (!state) {
+      return []
+    }
+
+    const byId = new Map(players.map((player) => [player.id, player]))
+    return state.turnOrder
+      .map((playerId) => byId.get(playerId))
+      .filter((player): player is (typeof players)[number] => Boolean(player))
+  }, [players, state])
+
+  const turnContext = useMemo(() => {
+    if (!state) {
+      return {
+        previousPlayerId: null,
+        currentPlayerId: null,
+        nextPlayerId: null,
+      }
+    }
+    return getTurnContext(state)
+  }, [state])
+
+  const moveTurnOrder = useCallback(async (playerId: string, direction: -1 | 1) => {
+    if (!state || state.role !== 'host') {
+      return
+    }
+
+    const currentIndex = state.turnOrder.indexOf(playerId)
+    if (currentIndex < 0) {
+      return
+    }
+
+    const nextIndex = currentIndex + direction
+    if (nextIndex < 0 || nextIndex >= state.turnOrder.length) {
+      return
+    }
+
+    const turnOrder = [...state.turnOrder]
+    ;[turnOrder[currentIndex], turnOrder[nextIndex]] = [turnOrder[nextIndex], turnOrder[currentIndex]]
+    await sendControl('SET_TURN_ORDER', { turnOrder })
+  }, [sendControl, state])
+
+  const myTurn = Boolean(state && turnContext.currentPlayerId === state.localPlayerId && state.phase !== 'lobby')
 
   if (!preloaded) {
     return (
@@ -1292,176 +1598,103 @@ function App() {
           </section>
         )}
 
-        {state && (
+        {state && isHost && state.phase === 'lobby' && (
+          <HostLobbySetup
+            state={state}
+            orderedPlayers={orderedPlayers}
+            reconnectBlocked={reconnectBlocked}
+            copiedShare={copiedShare}
+            hostJoinCode={hostJoinCode}
+            hostShareLink={hostShareLink}
+            pendingInitialMinutes={pendingInitialMinutes}
+            setPendingInitialMinutes={setPendingInitialMinutes}
+            sendControl={sendControl}
+            moveTurnOrder={moveTurnOrder}
+            copyToClipboard={copyToClipboard}
+          />
+        )}
+
+        {state && isHost && state.phase !== 'lobby' && (
           <section className="grid gap-4 lg:grid-cols-[1.3fr_1fr]">
-            <article className="panel-strong reveal rounded-2xl p-5">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <h2 className="text-2xl font-semibold">{state.roomName}</h2>
-                  <p className="mono mt-1 text-xs text-[#b7d1c9]">
-                    Join Code {state.roomId} | Host Peer {state.hostPeerId}
-                  </p>
-                </div>
-                <div className="flex gap-2">
-                  <span className="mono rounded-full border border-white/25 px-3 py-1 text-[11px] uppercase tracking-[0.16em] text-amber-200">
-                    {state.role}
-                  </span>
-                  <span className="mono rounded-full border border-white/25 px-3 py-1 text-[11px] uppercase tracking-[0.16em] text-emerald-200">
-                    {state.globalPaused ? 'global paused' : state.isRunning ? 'running' : 'stopped'}
-                  </span>
-                </div>
-              </div>
+            <PlayersPanel
+              state={state}
+              isHost={isHost}
+              reconnectBlocked={reconnectBlocked}
+              orderedPlayers={orderedPlayers}
+              sendControl={sendControl}
+              moveTurnOrder={moveTurnOrder}
+            />
 
-              <div className="mt-4 grid gap-3 md:grid-cols-2">
-                {players.map((player) => {
-                  const isActive = state.activePlayerId === player.id
-                  const isLocal = state.localPlayerId === player.id
-                  const isConnected = player.connected
-                  const lowTime = player.displayMs < 30_000
-                  return (
-                    <div
-                      key={player.id}
-                      className={`rounded-2xl border p-4 transition ${
-                        isActive
-                          ? 'border-amber-300 bg-amber-100/10 shadow-[var(--glow)]'
-                          : 'border-white/15 bg-white/5'
-                      } ${
-                        isConnected
-                          ? 'opacity-100'
-                          : 'border-rose-300/40 bg-rose-200/5 opacity-70 saturate-50'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <p className="text-sm font-semibold text-white">
-                          {player.name}
-                          {isLocal ? ' (You)' : ''}
-                        </p>
-                        {!isConnected && (
-                          <span className="mono rounded-md border border-rose-300/60 bg-rose-200/10 px-2 py-1 text-[10px] uppercase tracking-[0.12em] text-rose-200">
-                            Disconnected
-                          </span>
-                        )}
-                        {isHost && player.id !== state.hostPlayerId && (
-                          <Button
-                            className="px-2 py-1 text-[10px]"
-                            disabled={reconnectBlocked}
-                            onClick={() => void sendControl('KICK_PLAYER', { targetId: player.id })}
-                          >
-                            Kick
-                          </Button>
-                        )}
-                      </div>
-                      <p className={`mono mt-3 text-4xl tracking-tight ${lowTime ? 'text-rose-300' : 'text-[#ecf5f1]'} ${isConnected ? '' : 'text-white/60'}`}>
-                        {formatMs(player.displayMs)}
-                      </p>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        <Button disabled={reconnectBlocked || !isConnected} onClick={() => void sendControl('START_TIMER', { playerId: player.id })}>
-                          Start
-                        </Button>
-                        <Button disabled={reconnectBlocked || !isConnected} onClick={() => void sendControl('SWITCH_ACTIVE', { nextPlayerId: player.id })}>
-                          Switch
-                        </Button>
-                        {isActive && (
-                          <span className="mono rounded-md border border-amber-200/60 px-2 py-1 text-[10px] text-amber-200">
-                            ACTIVE
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            </article>
-
-            <aside className="panel reveal rounded-2xl p-5 [animation-delay:80ms]">
-              {isHost && (
-                <div className="mb-4 rounded-2xl border border-emerald-200/30 bg-emerald-200/10 p-4">
-                  <p className="mono text-[11px] uppercase tracking-[0.16em] text-emerald-100">Share Room</p>
-                  <p className="mono mt-2 text-3xl tracking-[0.08em] text-white">{hostJoinCode}</p>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <Button
-                      className="border-emerald-200/60 bg-emerald-200/15"
-                      onClick={() => void copyToClipboard(hostJoinCode, 'code')}
-                    >
-                      {copiedShare === 'code' ? 'Code Copied' : 'Copy Code'}
-                    </Button>
-                    <Button
-                      className="border-emerald-200/60 bg-emerald-200/15"
-                      onClick={() => void copyToClipboard(hostShareLink, 'link')}
-                    >
-                      {copiedShare === 'link' ? 'Link Copied' : 'Copy Invite Link'}
-                    </Button>
-                  </div>
-                  <div className="mt-4 inline-flex rounded-2xl border border-white/20 bg-white p-3">
-                    <QRCodeSVG
-                      value={hostShareLink || hostJoinCode}
-                      size={124}
-                      bgColor="transparent"
-                      fgColor="#0f172a"
-                      title="Scan to join room"
-                    />
-                  </div>
-                  <p className="mono mt-2 text-[11px] uppercase tracking-[0.12em] text-[#d2e4de]">
-                    Scan QR to open join link with code prefilled.
-                  </p>
-                </div>
-              )}
-
-              <h3 className="text-xl font-semibold">Control Deck</h3>
-              <p className="mono mt-1 text-xs text-[#b7d1c9]">{statusText}</p>
-              {hostReconnectDeadlineAt && (
-                <p className="mono mt-2 rounded-md border border-amber-300/60 bg-amber-200/10 px-2 py-1 text-xs text-amber-200">
-                  Waiting host reconnect: {hostReconnectSecondsLeft}s
-                </p>
-              )}
-
-              <div className="mt-4 grid grid-cols-2 gap-2">
-                <Button disabled={reconnectBlocked} onClick={() => void sendControl('PAUSE_TIMER')}>Pause</Button>
-                <Button disabled={reconnectBlocked} onClick={() => void sendControl('RESET_ALL')}>Reset All</Button>
-                <Button disabled={reconnectBlocked} onClick={() => void sendControl('GLOBAL_PAUSE')}>Global Pause</Button>
-                <Button disabled={reconnectBlocked} onClick={() => void sendControl('GLOBAL_RESUME')}>Global Resume</Button>
-              </div>
-
-              {isHost && (
-                <div className="mt-4 space-y-2 rounded-xl border border-white/20 bg-black/20 p-3">
-                  <p className="mono text-xs uppercase tracking-[0.14em] text-amber-100">Host Settings</p>
-                  <div className="flex gap-2">
-                    <Input
-                      type="number"
-                      min={1}
-                      max={180}
-                      disabled={reconnectBlocked}
-                      value={String(pendingInitialMinutes)}
-                      onChange={(event) => setPendingInitialMinutes(Number(event.target.value))}
-                    />
-                    <Button
-                      disabled={reconnectBlocked}
-                      onClick={() =>
-                        void sendControl('SET_INITIAL_TIME', {
-                          initialTimeMs: Math.max(1, pendingInitialMinutes) * 60_000,
-                        })
-                      }
-                    >
-                      Apply
-                    </Button>
-                  </div>
-                </div>
-              )}
-
-              <div className="mt-4 rounded-xl border border-white/20 bg-black/20 p-3 text-xs text-[#d3e3de]">
-                <p className="mono">Connection: {peerConnected || isHost ? 'online' : 'waiting'}</p>
-                <p className="mono mt-1">Local Peer: {localPeerId || state.hostPeerId}</p>
-                <p className="mono mt-1">Seq: {state.seq}</p>
-              </div>
-
-              <Button
-                className="mt-4 w-full border-rose-200/60 text-rose-100 hover:border-rose-200"
-                onClick={handleLeaveRoom}
-              >
-                Leave Room
-              </Button>
-            </aside>
+            <ControlDeck
+              state={state}
+              isHost={isHost}
+              statusText={statusText}
+              reconnectBlocked={reconnectBlocked}
+              hostReconnectDeadlineAt={hostReconnectDeadlineAt}
+              hostReconnectSecondsLeft={hostReconnectSecondsLeft}
+              myTurn={myTurn}
+              pendingInitialMinutes={pendingInitialMinutes}
+              setPendingInitialMinutes={setPendingInitialMinutes}
+              peerConnected={peerConnected}
+              localPeerId={localPeerId}
+              copiedShare={copiedShare}
+              hostJoinCode={hostJoinCode}
+              hostShareLink={hostShareLink}
+              players={players}
+              turnContext={turnContext}
+              sendControl={sendControl}
+              copyToClipboard={copyToClipboard}
+              handleLeaveRoom={handleLeaveRoom}
+            />
           </section>
+        )}
+
+        {state && !isHost && (
+          <section className="grid gap-4 lg:grid-cols-[1.4fr_1fr]">
+            <ParticipantTurnView
+              state={state}
+              orderedPlayers={orderedPlayers}
+              turnContext={turnContext}
+              myTurn={myTurn}
+              reconnectBlocked={reconnectBlocked}
+              sendControl={sendControl}
+            />
+
+            <ControlDeck
+              state={state}
+              isHost={isHost}
+              participantMode
+              statusText={statusText}
+              reconnectBlocked={reconnectBlocked}
+              hostReconnectDeadlineAt={hostReconnectDeadlineAt}
+              hostReconnectSecondsLeft={hostReconnectSecondsLeft}
+              myTurn={myTurn}
+              pendingInitialMinutes={pendingInitialMinutes}
+              setPendingInitialMinutes={setPendingInitialMinutes}
+              peerConnected={peerConnected}
+              localPeerId={localPeerId}
+              copiedShare={copiedShare}
+              hostJoinCode={hostJoinCode}
+              hostShareLink={hostShareLink}
+              players={players}
+              turnContext={turnContext}
+              sendControl={sendControl}
+              copyToClipboard={copyToClipboard}
+              handleLeaveRoom={handleLeaveRoom}
+            />
+          </section>
+        )}
+
+        {state && myTurn && (
+          <div className="fixed inset-x-4 bottom-4 z-30 md:hidden">
+            <Button
+              className="w-full border-emerald-200/70 bg-emerald-200/20 py-4 text-base"
+              disabled={reconnectBlocked || state.globalPaused}
+              onClick={() => void sendControl('END_TURN')}
+            >
+              Tap to End My Turn
+            </Button>
+          </div>
         )}
 
         <footer className="mono text-center text-xs tracking-[0.14em] text-[#aec6be]">

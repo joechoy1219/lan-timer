@@ -1,15 +1,86 @@
 import { withElapsedCommitted } from './timerEngine'
 import type { ReducerAction, RoomState } from './types'
 
+const TIMELINE_LIMIT = 24
+
 const markUpdated = (state: RoomState, now: number) => ({
   ...state,
   seq: state.seq + 1,
   updatedAt: now,
 })
 
+const pushTimeline = (state: RoomState, message: string, now: number): RoomState => ({
+  ...state,
+  timeline: [
+    {
+      id: `evt-${state.seq + 1}-${now}`,
+      message,
+      at: now,
+    },
+    ...state.timeline,
+  ].slice(0, TIMELINE_LIMIT),
+})
+
+const getPlayerName = (state: RoomState, playerId: string | null) => {
+  if (!playerId) {
+    return 'Unknown'
+  }
+  return state.players.find((player) => player.id === playerId)?.name ?? 'Unknown'
+}
+
+const resolveTurnOrder = (state: RoomState, order?: string[]) => {
+  const existingPlayerIds = state.players.map((player) => player.id)
+  const filtered = (order ?? state.turnOrder).filter((id) => existingPlayerIds.includes(id))
+  const appended = existingPlayerIds.filter((id) => !filtered.includes(id))
+  const nextOrder = [...filtered, ...appended]
+  return nextOrder.length > 0 ? nextOrder : existingPlayerIds
+}
+
+const getActiveFromIndex = (state: RoomState) => {
+  if (state.turnOrder.length === 0) {
+    return null
+  }
+  return state.turnOrder[state.turnIndex] ?? null
+}
+
+const withResolvedTurn = (state: RoomState, now: number, order?: string[]): RoomState => {
+  const turnOrder = resolveTurnOrder(state, order)
+  const activeIndex = Math.max(0, Math.min(state.turnIndex, Math.max(0, turnOrder.length - 1)))
+  const activePlayerId = turnOrder[activeIndex] ?? null
+
+  return {
+    ...state,
+    turnOrder,
+    turnIndex: activeIndex,
+    activePlayerId,
+    lastTurnSwitchedAt: activePlayerId ? state.lastTurnSwitchedAt ?? now : null,
+  }
+}
+
+const advanceTurn = (state: RoomState, now: number): RoomState => {
+  if (state.turnOrder.length === 0) {
+    return state
+  }
+
+  const nextIndex = (state.turnIndex + 1) % state.turnOrder.length
+  const wrapped = nextIndex === 0
+
+  return {
+    ...state,
+    turnIndex: nextIndex,
+    activePlayerId: state.turnOrder[nextIndex] ?? null,
+    lastTurnSwitchedAt: now,
+    round: wrapped ? state.round + 1 : state.round,
+    isRunning: !state.globalPaused,
+    lastStartedAt: state.globalPaused ? null : now,
+    phase: state.globalPaused ? 'paused' : 'running',
+  }
+}
+
 export const applyHostAction = (rawState: RoomState, action: ReducerAction): RoomState => {
   let state = withElapsedCommitted(rawState, action.now)
   const now = action.now
+  const isHostActor = action.actorId === state.hostPlayerId
 
   switch (action.type) {
     case 'START_TIMER': {
@@ -17,12 +88,47 @@ export const applyHostAction = (rawState: RoomState, action: ReducerAction): Roo
       if (state.globalPaused || !state.players.some((player) => player.id === playerId)) {
         return state
       }
+
+      const turnIndex = state.turnOrder.indexOf(playerId)
       state = {
         ...state,
+        turnIndex: turnIndex >= 0 ? turnIndex : state.turnIndex,
         activePlayerId: playerId,
         isRunning: true,
         lastStartedAt: now,
+        phase: 'running',
+        lastTurnSwitchedAt: now,
       }
+      state = pushTimeline(state, `Timer started on ${getPlayerName(state, playerId)}.`, now)
+      return markUpdated(state, now)
+    }
+    case 'START_ROUND': {
+      if (!isHostActor || state.turnOrder.length === 0) {
+        return state
+      }
+      const turnIndex = Math.max(0, Math.min(state.turnIndex, state.turnOrder.length - 1))
+      state = {
+        ...state,
+        turnIndex,
+        activePlayerId: state.turnOrder[turnIndex] ?? null,
+        isRunning: !state.globalPaused,
+        lastStartedAt: state.globalPaused ? null : now,
+        phase: state.globalPaused ? 'paused' : 'running',
+        lastTurnSwitchedAt: now,
+      }
+      state = pushTimeline(state, `Round started. ${getPlayerName(state, state.activePlayerId)} is up.`, now)
+      return markUpdated(state, now)
+    }
+    case 'END_TURN': {
+      if (!state.activePlayerId || state.phase === 'lobby') {
+        return state
+      }
+      if (action.actorId !== state.activePlayerId) {
+        return state
+      }
+      const actorName = getPlayerName(state, action.actorId)
+      state = advanceTurn(state, now)
+      state = pushTimeline(state, `${actorName} ended turn. ${getPlayerName(state, state.activePlayerId)} is up.`, now)
       return markUpdated(state, now)
     }
     case 'PAUSE_TIMER': {
@@ -30,20 +136,56 @@ export const applyHostAction = (rawState: RoomState, action: ReducerAction): Roo
         ...state,
         isRunning: false,
         lastStartedAt: null,
+        phase: state.phase === 'lobby' ? 'lobby' : 'paused',
       }
+      state = pushTimeline(state, 'Timer paused.', now)
       return markUpdated(state, now)
     }
     case 'SWITCH_ACTIVE': {
       const nextPlayerId = action.payload?.nextPlayerId as string | undefined
-      if (!nextPlayerId || !state.players.some((player) => player.id === nextPlayerId)) {
+      if (!isHostActor || !nextPlayerId || !state.players.some((player) => player.id === nextPlayerId)) {
         return state
       }
+      const nextIndex = state.turnOrder.indexOf(nextPlayerId)
       state = {
         ...state,
+        turnIndex: nextIndex >= 0 ? nextIndex : state.turnIndex,
         activePlayerId: nextPlayerId,
         isRunning: !state.globalPaused,
         lastStartedAt: state.globalPaused ? null : now,
+        phase: state.globalPaused ? 'paused' : 'running',
+        lastTurnSwitchedAt: now,
       }
+      state = pushTimeline(state, `Host switched active player to ${getPlayerName(state, nextPlayerId)}.`, now)
+      return markUpdated(state, now)
+    }
+    case 'SET_TURN_ORDER': {
+      if (!isHostActor) {
+        return state
+      }
+      const requestedOrder = action.payload?.turnOrder as string[] | undefined
+      if (!Array.isArray(requestedOrder) || requestedOrder.length === 0) {
+        return state
+      }
+
+      const currentActive = state.activePlayerId
+      state = withResolvedTurn(state, now, requestedOrder)
+      if (currentActive && state.turnOrder.includes(currentActive)) {
+        state = {
+          ...state,
+          turnIndex: state.turnOrder.indexOf(currentActive),
+          activePlayerId: currentActive,
+        }
+      }
+      state = pushTimeline(state, 'Turn order was updated by host.', now)
+      return markUpdated(state, now)
+    }
+    case 'FORCE_NEXT': {
+      if (!isHostActor || state.phase === 'lobby') {
+        return state
+      }
+      state = advanceTurn(state, now)
+      state = pushTimeline(state, `Host forced next turn. ${getPlayerName(state, state.activePlayerId)} is up.`, now)
       return markUpdated(state, now)
     }
     case 'RESET_ALL': {
@@ -53,10 +195,15 @@ export const applyHostAction = (rawState: RoomState, action: ReducerAction): Roo
           ...player,
           remainingMs: state.initialTimeMs,
         })),
-        activePlayerId: null,
+        turnIndex: 0,
+        activePlayerId: state.turnOrder[0] ?? null,
         isRunning: false,
         lastStartedAt: null,
+        phase: 'lobby',
+        round: 1,
+        lastTurnSwitchedAt: null,
       }
+      state = pushTimeline(state, 'All timers reset. Back to lobby.', now)
       return markUpdated(state, now)
     }
     case 'SET_INITIAL_TIME': {
@@ -71,10 +218,15 @@ export const applyHostAction = (rawState: RoomState, action: ReducerAction): Roo
           ...player,
           remainingMs: initialTimeMs,
         })),
-        activePlayerId: null,
+        turnIndex: 0,
+        activePlayerId: state.turnOrder[0] ?? null,
         isRunning: false,
         lastStartedAt: null,
+        phase: 'lobby',
+        round: 1,
+        lastTurnSwitchedAt: null,
       }
+      state = pushTimeline(state, `Initial time set to ${Math.round(initialTimeMs / 60_000)} minute(s).`, now)
       return markUpdated(state, now)
     }
     case 'GLOBAL_PAUSE': {
@@ -83,30 +235,45 @@ export const applyHostAction = (rawState: RoomState, action: ReducerAction): Roo
         globalPaused: true,
         isRunning: false,
         lastStartedAt: null,
+        phase: state.phase === 'lobby' ? 'lobby' : 'paused',
       }
+      state = pushTimeline(state, 'Global pause enabled.', now)
       return markUpdated(state, now)
     }
     case 'GLOBAL_RESUME': {
       state = {
         ...state,
         globalPaused: false,
-        isRunning: Boolean(state.activePlayerId),
-        lastStartedAt: state.activePlayerId ? now : null,
+        isRunning: state.phase !== 'lobby' && Boolean(state.activePlayerId),
+        lastStartedAt: state.phase !== 'lobby' && state.activePlayerId ? now : null,
+        phase: state.phase === 'lobby' ? 'lobby' : 'running',
       }
+      state = pushTimeline(state, 'Global resume enabled.', now)
       return markUpdated(state, now)
     }
     case 'KICK_PLAYER': {
       const targetId = action.payload?.targetId as string | undefined
-      if (!targetId || targetId === state.hostPlayerId) {
+      if (!isHostActor || !targetId || targetId === state.hostPlayerId) {
         return state
       }
+      const targetWasActive = state.activePlayerId === targetId
+      const targetName = getPlayerName(state, targetId)
+      const players = state.players.filter((player) => player.id !== targetId)
       state = {
         ...state,
-        players: state.players.filter((player) => player.id !== targetId),
-        activePlayerId: state.activePlayerId === targetId ? null : state.activePlayerId,
-        isRunning: state.activePlayerId === targetId ? false : state.isRunning,
-        lastStartedAt: state.activePlayerId === targetId ? null : state.lastStartedAt,
+        players,
       }
+      state = withResolvedTurn(state, now)
+      if (targetWasActive) {
+        state = {
+          ...state,
+          activePlayerId: getActiveFromIndex(state),
+          isRunning: state.phase !== 'lobby' && !state.globalPaused,
+          lastStartedAt: state.phase !== 'lobby' && !state.globalPaused ? now : null,
+          lastTurnSwitchedAt: now,
+        }
+      }
+      state = pushTimeline(state, `${targetName} was removed from room.`, now)
       return markUpdated(state, now)
     }
     case 'RENAME_SELF': {
@@ -125,6 +292,7 @@ export const applyHostAction = (rawState: RoomState, action: ReducerAction): Roo
             : player,
         ),
       }
+      state = pushTimeline(state, `${getPlayerName(state, action.actorId)} updated display name.`, now)
       return markUpdated(state, now)
     }
     default:
