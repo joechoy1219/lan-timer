@@ -188,17 +188,22 @@ export const ControlDeck = ({
 
     <div className="mt-4 rounded-xl border border-white/20 bg-black/20 p-3">
       <p className="mono text-[11px] uppercase tracking-[0.12em] text-[#bad7cf]">Recent Events</p>
-      <div className="mt-2 space-y-2">
-        {state.timeline.slice(0, 5).map((event) => (
-          <div key={event.id} className="rounded-lg border border-white/10 bg-white/5 px-2 py-2">
+      <ul
+        className="mt-2 max-h-56 space-y-2 overflow-y-auto pr-1"
+        role="log"
+        aria-live="polite"
+        aria-label="Room timeline events"
+      >
+        {state.timeline.slice(0, 8).map((event) => (
+          <li key={event.id} className="rounded-lg border border-white/10 bg-white/5 px-2 py-2">
             <p className="text-xs text-[#dfece8]">{event.message}</p>
             <p className="mono mt-1 text-[10px] text-[#9fc0b7]">{formatEventTime(event.at)}</p>
-          </div>
+          </li>
         ))}
         {state.timeline.length === 0 && (
-          <p className="mono text-[11px] text-[#9fc0b7]">No events yet.</p>
+          <li className="mono text-[11px] text-[#9fc0b7]">No events yet.</li>
         )}
-      </div>
+      </ul>
     </div>
 
     <Button

@@ -1517,7 +1517,7 @@ function App() {
   }
 
   return (
-    <main className="grain px-5 pb-10 pt-6 md:px-8">
+    <main className={`grain px-5 pt-6 md:px-8 ${myTurn ? 'pb-24 md:pb-10' : 'pb-10'}`}>
       <div className="mx-auto max-w-6xl space-y-6">
         <header className="panel reveal relative overflow-hidden rounded-3xl p-6 md:p-10">
           <div className="float absolute right-[-30px] top-[-30px] h-40 w-40 rounded-full bg-emerald-300/15 blur-2xl" aria-hidden />
