@@ -26,6 +26,18 @@ body,
   min-height: 100dvh;
 }
 
+html.landing-lock,
+body.landing-lock {
+  overflow: hidden;
+  overscroll-behavior: none;
+  height: 100dvh;
+}
+
+body.landing-lock #root {
+  height: 100dvh;
+  overflow: hidden;
+}
+
 body {
   margin: 0;
   font-family: 'Space Grotesk', 'Segoe UI', sans-serif;

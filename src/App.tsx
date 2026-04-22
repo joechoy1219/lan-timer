@@ -211,6 +211,7 @@ function App() {
   const [cameraModalOpen, setCameraModalOpen] = useState(false)
   const [cameraError, setCameraError] = useState<string | null>(null)
   const [cameraScanning, setCameraScanning] = useState(false)
+  const [joinTipsOpen, setJoinTipsOpen] = useState(false)
   const [copiedShare, setCopiedShare] = useState<'code' | 'link' | null>(null)
   const [pendingInitialMinutes, setPendingInitialMinutes] = useState(10)
   const [localPeerId, setLocalPeerId] = useState('')
@@ -1251,6 +1252,22 @@ function App() {
   }, [joinRoom, setStatusText, state])
 
   useEffect(() => {
+    if (typeof document === 'undefined' || state) {
+      return
+    }
+
+    const html = document.documentElement
+    const body = document.body
+    html.classList.add('landing-lock')
+    body.classList.add('landing-lock')
+
+    return () => {
+      html.classList.remove('landing-lock')
+      body.classList.remove('landing-lock')
+    }
+  }, [state])
+
+  useEffect(() => {
     if (!state) {
       return
     }
@@ -1506,6 +1523,11 @@ function App() {
 
   const myTurn = Boolean(state && turnContext.currentPlayerId === state.localPlayerId && state.phase !== 'lobby')
   const hostLobbyMode = Boolean(state && isHost && state.phase === 'lobby')
+  const landingButtonClass = 'w-full min-h-11 py-2.5 text-[12px]'
+  const landingNeutralButtonClass = `${landingButtonClass} border-white/50 bg-white/8 text-white`
+  const landingCreateButtonClass = `${landingButtonClass} border-emerald-200/65 bg-emerald-200/10 text-emerald-50`
+  const landingJoinButtonClass = `${landingButtonClass} border-amber-200/70 bg-amber-200/10 text-amber-50`
+  const landingDangerButtonClass = `${landingButtonClass} border-rose-200/60 text-rose-100`
 
   if (!preloaded) {
     return (
@@ -1518,54 +1540,110 @@ function App() {
   }
 
   return (
-    <main className={`grain px-5 pt-6 md:px-8 ${hostLobbyMode ? 'h-dvh overflow-hidden pb-4' : myTurn ? 'pb-24 md:pb-10' : 'pb-10'}`}>
-      <div className={`mx-auto max-w-6xl ${hostLobbyMode ? 'flex h-full flex-col gap-4' : 'space-y-6'}`}>
+    <main
+      className={`grain ${
+        !state
+          ? 'h-dvh overflow-hidden px-4 py-4 sm:px-6 sm:py-6'
+          : `px-5 pt-6 md:px-8 ${hostLobbyMode ? 'h-dvh overflow-hidden pb-4' : myTurn ? 'pb-24 md:pb-10' : 'pb-10'}`
+      }`}
+    >
+      <div
+        className={`mx-auto ${
+          !state
+            ? 'flex h-full w-full max-w-sm flex-col justify-center gap-4'
+            : `${hostLobbyMode ? 'max-w-6xl flex h-full flex-col gap-4' : 'max-w-6xl space-y-6'}`
+        }`}
+      >
         {!state && (
-          <header className="panel reveal relative overflow-hidden rounded-3xl p-6 md:p-10">
-            <div className="float absolute right-[-30px] top-[-30px] h-40 w-40 rounded-full bg-emerald-300/15 blur-2xl" aria-hidden />
-            <p className="mono text-xs uppercase tracking-[0.24em] text-amber-200">LAN Turn Timer</p>
-            <h1 className="headline mt-3 text-balance">One Active Clock. Zero Ambiguity.</h1>
-            <p className="mt-4 max-w-3xl text-sm text-[#cae5dd] md:text-base">
-              Host-authoritative, browser-only timer room for Go, chess, debate, and tabletop games. Capacity 2-8 players.
+          <header className="panel-strong reveal relative overflow-hidden rounded-3xl px-4 py-4 sm:px-5 sm:py-5">
+            <div className="float absolute -right-10 -top-10 h-24 w-24 rounded-full bg-amber-200/18 blur-2xl" aria-hidden />
+            <div className="absolute -bottom-10 left-8 h-14 w-14 rounded-full bg-emerald-200/16 blur-2xl" aria-hidden />
+            <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/6 px-3 py-1.5">
+              <span className="h-2 w-2 rounded-full bg-emerald-300" aria-hidden />
+              <p className="mono text-[10px] uppercase tracking-[0.2em] text-[#dcece7]">Go Match · Board Game</p>
+            </div>
+            <h1 className="mt-3 text-[clamp(1.65rem,7.2vw,2.35rem)] font-semibold leading-[0.96] tracking-[-0.045em] text-white">
+              Turn-based timer
+            </h1>
+            <p className="mt-2 text-[13px] leading-5 text-[#cfe1dc] sm:text-sm sm:leading-6">
+              Built for board game tables. Host a room and sync turns instantly with an 8-character code.
             </p>
           </header>
         )}
 
         {!state && (
-          <section className="grid gap-4 md:grid-cols-2">
+          <section className="space-y-3">
             {forcedLeaveReason && (
-              <article className="panel reveal rounded-2xl border border-rose-300/60 p-5 text-rose-100 md:col-span-2">
-                <h2 className="text-xl font-semibold">Disconnected</h2>
-                <p className="mt-2 text-sm text-rose-100/90">{forcedLeaveReason}</p>
-                <Button className="mt-4" onClick={() => setForcedLeaveReason(null)}>
+              <article className="panel reveal rounded-2xl border border-rose-300/60 p-4 text-rose-100">
+                <h2 className="text-base font-semibold">Disconnected</h2>
+                <p className="mt-1 text-sm text-rose-100/90">{forcedLeaveReason}</p>
+                <Button className={`mt-3 ${landingDangerButtonClass}`} onClick={() => setForcedLeaveReason(null)}>
                   Dismiss
                 </Button>
               </article>
             )}
-            <article className="panel reveal rounded-2xl p-5">
-              <h2 className="text-xl font-semibold">Create Room</h2>
-              <div className="mt-4 space-y-3">
+
+            <article className="panel reveal rounded-2xl p-4">
+              <h2 className="text-lg font-semibold text-white">Create Room</h2>
+              <div className="mt-3 space-y-2.5">
                 <Input
                   placeholder="Room name"
                   value={createForm.roomName}
                   onChange={(event) => setCreateForm((prev) => ({ ...prev, roomName: event.target.value }))}
                 />
-                <p className="mono rounded-xl border border-amber-200/35 bg-amber-200/10 px-3 py-2 text-[11px] uppercase tracking-[0.14em] text-amber-100">
-                  A secure 8-character join code will be generated automatically.
-                </p>
                 <Button
-                  className="w-full"
+                  className={landingCreateButtonClass}
                   onClick={() => void createHostRoom()}
                   disabled={!createForm.roomName.trim()}
                 >
-                  Create as Host
+                  Create Room
                 </Button>
               </div>
             </article>
 
-            <article className="panel reveal rounded-2xl p-5 [animation-delay:90ms]">
-              <h2 className="text-xl font-semibold">Join Room</h2>
-              <div className="mt-4 space-y-3">
+            <article className="panel reveal rounded-2xl p-4 [animation-delay:90ms]">
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="text-lg font-semibold text-white">Join Room</h2>
+                <div className="relative shrink-0">
+                  <button
+                    type="button"
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-white/20 bg-black/20 text-[#d6ece6] transition hover:border-amber-200/80 hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-200/90 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0b1d26]"
+                    aria-label="Show join room tips"
+                    aria-expanded={joinTipsOpen}
+                    aria-controls="join-room-tip"
+                    onClick={() => setJoinTipsOpen((open) => !open)}
+                  >
+                    <svg
+                      aria-hidden="true"
+                      viewBox="0 0 24 24"
+                      className="h-[14px] w-[14px]"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.9"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <circle cx="12" cy="12" r="9" />
+                      <path d="M9.75 9.25a2.75 2.75 0 1 1 4.56 2.07c-.73.63-1.47 1.16-1.84 1.93-.15.31-.22.63-.22 1" />
+                      <circle cx="12" cy="17.2" r="0.7" fill="currentColor" stroke="none" />
+                    </svg>
+                  </button>
+
+                  {joinTipsOpen && (
+                    <div
+                      id="join-room-tip"
+                      role="tooltip"
+                      className="panel-strong absolute right-0 top-10 z-10 w-52 rounded-2xl px-3 py-2 text-left shadow-[0_20px_40px_rgba(0,0,0,0.38)]"
+                    >
+                      <p className="mono text-[10px] uppercase tracking-[0.14em] text-amber-200">Join Tip</p>
+                      <p className="mt-1 text-xs leading-5 text-[#d5e6e1]">
+                        Paste is supported. Spaces and symbols are removed automatically.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="mt-3 space-y-2.5">
                 <Input
                   placeholder="Enter 8-character join code"
                   maxLength={JOIN_CODE_LENGTH}
@@ -1577,11 +1655,8 @@ function App() {
                     }))
                   }
                 />
-                <p className="mono text-[11px] uppercase tracking-[0.12em] text-[#b7d1c9]">
-                  Tip: paste works with spaces or symbols; they will be removed automatically.
-                </p>
                 <Button
-                  className="w-full"
+                  className={landingNeutralButtonClass}
                   onClick={() => {
                     setCameraModalOpen(true)
                     void startCameraScanner()
@@ -1590,11 +1665,11 @@ function App() {
                   Use Camera to Scan Code
                 </Button>
                 <Button
-                  className="w-full"
+                  className={landingJoinButtonClass}
                   onClick={() => void joinRoom()}
                   disabled={joinForm.joinCode.trim().length !== JOIN_CODE_LENGTH}
                 >
-                  Join as Participant
+                  Join Room
                 </Button>
               </div>
             </article>
@@ -1703,11 +1778,7 @@ function App() {
           </div>
         )}
 
-        {!state && (
-          <footer className="mono text-center text-xs tracking-[0.14em] text-[#aec6be]">
-            Browser-only sync with host authority, sequence ordering, and IndexedDB recovery.
-          </footer>
-        )}
+        {!state && <p className="mono text-center text-[10px] uppercase tracking-[0.18em] text-[#aec6be]">Mobile-first room lobby</p>}
       </div>
 
       <AnimatePresence>
