@@ -1505,6 +1505,7 @@ function App() {
   }, [sendControl, state])
 
   const myTurn = Boolean(state && turnContext.currentPlayerId === state.localPlayerId && state.phase !== 'lobby')
+  const hostLobbyMode = Boolean(state && isHost && state.phase === 'lobby')
 
   if (!preloaded) {
     return (
@@ -1517,16 +1518,18 @@ function App() {
   }
 
   return (
-    <main className={`grain px-5 pt-6 md:px-8 ${myTurn ? 'pb-24 md:pb-10' : 'pb-10'}`}>
-      <div className="mx-auto max-w-6xl space-y-6">
-        <header className="panel reveal relative overflow-hidden rounded-3xl p-6 md:p-10">
-          <div className="float absolute right-[-30px] top-[-30px] h-40 w-40 rounded-full bg-emerald-300/15 blur-2xl" aria-hidden />
-          <p className="mono text-xs uppercase tracking-[0.24em] text-amber-200">LAN Turn Timer</p>
-          <h1 className="headline mt-3 text-balance">One Active Clock. Zero Ambiguity.</h1>
-          <p className="mt-4 max-w-3xl text-sm text-[#cae5dd] md:text-base">
-            Host-authoritative, browser-only timer room for Go, chess, debate, and tabletop games. Capacity 2-8 players.
-          </p>
-        </header>
+    <main className={`grain px-5 pt-6 md:px-8 ${hostLobbyMode ? 'h-dvh overflow-hidden pb-4' : myTurn ? 'pb-24 md:pb-10' : 'pb-10'}`}>
+      <div className={`mx-auto max-w-6xl ${hostLobbyMode ? 'flex h-full flex-col gap-4' : 'space-y-6'}`}>
+        {!state && (
+          <header className="panel reveal relative overflow-hidden rounded-3xl p-6 md:p-10">
+            <div className="float absolute right-[-30px] top-[-30px] h-40 w-40 rounded-full bg-emerald-300/15 blur-2xl" aria-hidden />
+            <p className="mono text-xs uppercase tracking-[0.24em] text-amber-200">LAN Turn Timer</p>
+            <h1 className="headline mt-3 text-balance">One Active Clock. Zero Ambiguity.</h1>
+            <p className="mt-4 max-w-3xl text-sm text-[#cae5dd] md:text-base">
+              Host-authoritative, browser-only timer room for Go, chess, debate, and tabletop games. Capacity 2-8 players.
+            </p>
+          </header>
+        )}
 
         {!state && (
           <section className="grid gap-4 md:grid-cols-2">
@@ -1599,19 +1602,22 @@ function App() {
         )}
 
         {state && isHost && state.phase === 'lobby' && (
-          <HostLobbySetup
-            state={state}
-            orderedPlayers={orderedPlayers}
-            reconnectBlocked={reconnectBlocked}
-            copiedShare={copiedShare}
-            hostJoinCode={hostJoinCode}
-            hostShareLink={hostShareLink}
-            pendingInitialMinutes={pendingInitialMinutes}
-            setPendingInitialMinutes={setPendingInitialMinutes}
-            sendControl={sendControl}
-            moveTurnOrder={moveTurnOrder}
-            copyToClipboard={copyToClipboard}
-          />
+          <div className="min-h-0 flex-1">
+            <HostLobbySetup
+              state={state}
+              orderedPlayers={orderedPlayers}
+              reconnectBlocked={reconnectBlocked}
+              copiedShare={copiedShare}
+              hostJoinCode={hostJoinCode}
+              hostShareLink={hostShareLink}
+              pendingInitialMinutes={pendingInitialMinutes}
+              setPendingInitialMinutes={setPendingInitialMinutes}
+              sendControl={sendControl}
+              moveTurnOrder={moveTurnOrder}
+              copyToClipboard={copyToClipboard}
+              handleLeaveRoom={handleLeaveRoom}
+            />
+          </div>
         )}
 
         {state && isHost && state.phase !== 'lobby' && (
@@ -1697,9 +1703,11 @@ function App() {
           </div>
         )}
 
-        <footer className="mono text-center text-xs tracking-[0.14em] text-[#aec6be]">
-          Browser-only sync with host authority, sequence ordering, and IndexedDB recovery.
-        </footer>
+        {!state && (
+          <footer className="mono text-center text-xs tracking-[0.14em] text-[#aec6be]">
+            Browser-only sync with host authority, sequence ordering, and IndexedDB recovery.
+          </footer>
+        )}
       </div>
 
       <AnimatePresence>
