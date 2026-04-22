@@ -202,6 +202,7 @@ function App() {
 
   const [preloaded, setPreloaded] = useState(false)
   const [peerConnected, setPeerConnected] = useState(false)
+  const [creatingRoom, setCreatingRoom] = useState(false)
   const [createForm, setCreateForm] = useState({
     roomName: 'Go Match Room',
   })
@@ -1054,55 +1055,66 @@ function App() {
   }, [applyHostAction, clearHostReconnectWait, clearJoinTimeout, leaveRoom, markJoinCancelled, markParticipantDisconnected, openJoinStatusModal, removeParticipantFromHostState, setStateFromHost, setStatusText, showJoinSuccessAndAutoClose, wasJoinCancelledRecently])
 
   const createHostRoom = async () => {
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      const joinCode = generateJoinCode()
-      const hostPeerId = `host-${joinCode}`
-
-      const hostReady = await new Promise<boolean>((resolve) => {
-        let settled = false
-        const settle = (value: boolean) => {
-          if (settled) {
-            return
-          }
-          settled = true
-          resolve(value)
-        }
-
-        const timeoutId = window.setTimeout(() => settle(false), 2500)
-
-        service.createHost(hostPeerId, handleNetworkMessage, (status) => {
-          setStatusText(status)
-          if (status.startsWith('Host ready as')) {
-            window.clearTimeout(timeoutId)
-            settle(true)
-            return
-          }
-
-          const statusLower = status.toLowerCase()
-          if (statusLower.includes('taken') || statusLower.includes('unavailable-id')) {
-            window.clearTimeout(timeoutId)
-            settle(false)
-          }
-        })
-      })
-
-      if (!hostReady) {
-        continue
-      }
-
-      const created = await createRoom({
-        roomName: createForm.roomName,
-        joinCode,
-        hostPeerId,
-      })
-      setJoinForm({ joinCode })
-      setPendingInitialMinutes(Math.max(1, Math.round(created.initialTimeMs / 60_000)))
-      setLocalPeerId(hostPeerId)
-      setPeerConnected(false)
+    if (creatingRoom) {
       return
     }
 
-    setStatusText('Unable to allocate a unique join code. Please try again.')
+    setCreatingRoom(true)
+    setStatusText('Creating room...')
+
+    try {
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        const joinCode = generateJoinCode()
+        const hostPeerId = `host-${joinCode}`
+
+        const hostReady = await new Promise<boolean>((resolve) => {
+          let settled = false
+          const settle = (value: boolean) => {
+            if (settled) {
+              return
+            }
+            settled = true
+            resolve(value)
+          }
+
+          const timeoutId = window.setTimeout(() => settle(false), 2500)
+
+          service.createHost(hostPeerId, handleNetworkMessage, (status) => {
+            setStatusText(status)
+            if (status.startsWith('Host ready as')) {
+              window.clearTimeout(timeoutId)
+              settle(true)
+              return
+            }
+
+            const statusLower = status.toLowerCase()
+            if (statusLower.includes('taken') || statusLower.includes('unavailable-id')) {
+              window.clearTimeout(timeoutId)
+              settle(false)
+            }
+          })
+        })
+
+        if (!hostReady) {
+          continue
+        }
+
+        const created = await createRoom({
+          roomName: createForm.roomName,
+          joinCode,
+          hostPeerId,
+        })
+        setJoinForm({ joinCode })
+        setPendingInitialMinutes(Math.max(1, Math.round(created.initialTimeMs / 60_000)))
+        setLocalPeerId(hostPeerId)
+        setPeerConnected(false)
+        return
+      }
+
+      setStatusText('Unable to allocate a unique join code. Please try again.')
+    } finally {
+      setCreatingRoom(false)
+    }
   }
 
   const joinRoom = useCallback(async (options?: {
@@ -1594,9 +1606,9 @@ function App() {
                 <Button
                   className={landingCreateButtonClass}
                   onClick={() => void createHostRoom()}
-                  disabled={!createForm.roomName.trim()}
+                  disabled={!createForm.roomName.trim() || creatingRoom}
                 >
-                  Create Room
+                  {creatingRoom ? 'Creating Room...' : 'Create Room'}
                 </Button>
               </div>
             </article>
