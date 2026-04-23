@@ -77,15 +77,6 @@ export const PlayersPanel = ({
                   Disconnected
                 </span>
               )}
-              {isHost && player.id !== state.hostPlayerId && (
-                <Button
-                  className="px-2 py-1 text-[10px]"
-                  disabled={reconnectBlocked}
-                  onClick={() => void sendControl('KICK_PLAYER', { targetId: player.id })}
-                >
-                  Kick
-                </Button>
-              )}
             </div>
             <p className={`mono mt-3 text-4xl tracking-tight ${lowTime ? 'text-rose-300' : 'text-[#ecf5f1]'} ${isConnected ? '' : 'text-white/60'}`}>
               {formatMs(player.displayMs)}

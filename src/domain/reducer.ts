@@ -36,13 +36,6 @@ const resolveTurnOrder = (state: RoomState, order?: string[]) => {
   return nextOrder.length > 0 ? nextOrder : existingPlayerIds
 }
 
-const getActiveFromIndex = (state: RoomState) => {
-  if (state.turnOrder.length === 0) {
-    return null
-  }
-  return state.turnOrder[state.turnIndex] ?? null
-}
-
 const withResolvedTurn = (state: RoomState, now: number, order?: string[]): RoomState => {
   const turnOrder = resolveTurnOrder(state, order)
   const activeIndex = Math.max(0, Math.min(state.turnIndex, Math.max(0, turnOrder.length - 1)))
@@ -249,31 +242,6 @@ export const applyHostAction = (rawState: RoomState, action: ReducerAction): Roo
         phase: state.phase === 'lobby' ? 'lobby' : 'running',
       }
       state = pushTimeline(state, 'Global resume enabled.', now)
-      return markUpdated(state, now)
-    }
-    case 'KICK_PLAYER': {
-      const targetId = action.payload?.targetId as string | undefined
-      if (!isHostActor || !targetId || targetId === state.hostPlayerId) {
-        return state
-      }
-      const targetWasActive = state.activePlayerId === targetId
-      const targetName = getPlayerName(state, targetId)
-      const players = state.players.filter((player) => player.id !== targetId)
-      state = {
-        ...state,
-        players,
-      }
-      state = withResolvedTurn(state, now)
-      if (targetWasActive) {
-        state = {
-          ...state,
-          activePlayerId: getActiveFromIndex(state),
-          isRunning: state.phase !== 'lobby' && !state.globalPaused,
-          lastStartedAt: state.phase !== 'lobby' && !state.globalPaused ? now : null,
-          lastTurnSwitchedAt: now,
-        }
-      }
-      state = pushTimeline(state, `${targetName} was removed from room.`, now)
       return markUpdated(state, now)
     }
     case 'RENAME_SELF': {

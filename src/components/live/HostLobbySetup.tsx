@@ -1,7 +1,24 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import type { ControlActionType, RoomState } from '../../domain/types'
-import { formatMs } from '../../domain/timerEngine'
 import { QRCodeSVG } from 'qrcode.react'
+import {
+  DndContext,
+  KeyboardSensor,
+  MouseSensor,
+  TouchSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core'
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 import { Button } from '../ui/Button'
 import { Input } from '../ui/Input'
 
@@ -22,10 +39,38 @@ interface HostLobbySetupProps {
   pendingInitialMinutes: number
   setPendingInitialMinutes: (value: number) => void
   sendControl: (action: ControlActionType, payload?: Record<string, unknown>) => Promise<void>
-  moveTurnOrder: (playerId: string, direction: -1 | 1) => Promise<void>
   copyToClipboard: (value: string, mode: 'code' | 'link') => Promise<void>
   handleLeaveRoom: () => void
 }
+
+const truncateLobbyName = (name: string, maxLength = 18) => {
+  if (name.length <= maxLength) {
+    return name
+  }
+  return `${name.slice(0, maxLength)}....`
+}
+
+const ActionIconButton = ({
+  label,
+  disabled,
+  onClick,
+  children,
+}: {
+  label: string
+  disabled?: boolean
+  onClick: () => void
+  children: ReactNode
+}) => (
+  <button
+    type="button"
+    className="mono inline-flex h-11 w-11 items-center justify-center rounded-xl border border-white/20 bg-white/10 text-[#d6ece6] transition hover:border-amber-200/80 hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-200/90 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0b1d26] disabled:cursor-not-allowed disabled:opacity-35"
+    aria-label={label}
+    disabled={disabled}
+    onClick={onClick}
+  >
+    {children}
+  </button>
+)
 
 const IconButton = ({
   label,
@@ -45,6 +90,106 @@ const IconButton = ({
     {children}
   </button>
 )
+
+interface LobbyPlayerRowProps {
+  player: LivePlayerView
+  index: number
+  totalPlayers: number
+  isLocal: boolean
+  reconnectBlocked: boolean
+  onMoveToEdge: (playerId: string, edge: 'start' | 'end') => void
+}
+
+const LobbyPlayerRow = ({
+  player,
+  index,
+  totalPlayers,
+  isLocal,
+  reconnectBlocked,
+  onMoveToEdge,
+}: LobbyPlayerRowProps) => {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    setActivatorNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: player.id, disabled: reconnectBlocked })
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition,
+      }}
+      className={`rounded-xl border border-white/20 bg-black/20 px-3 py-3 ${isDragging ? 'z-20 border-amber-200/70 bg-[#133240] shadow-[0_16px_36px_rgba(0,0,0,0.45)]' : ''}`}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <button
+            ref={setActivatorNodeRef}
+            type="button"
+            className="inline-flex h-12 w-12 cursor-grab touch-none select-none items-center justify-center rounded-xl text-[#b8d6cd] active:cursor-grabbing"
+            aria-label={`Drag to reorder ${player.name}`}
+            {...attributes}
+            {...listeners}
+          >
+            <span className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-white/15 bg-black/30 transition hover:border-white/25 hover:bg-black/40">
+              <svg viewBox="0 0 24 24" aria-hidden="true" className="h-5 w-5 pointer-events-none" fill="currentColor">
+                <circle cx="8" cy="7" r="1.5" />
+                <circle cx="8" cy="12" r="1.5" />
+                <circle cx="8" cy="17" r="1.5" />
+                <circle cx="16" cy="7" r="1.5" />
+                <circle cx="16" cy="12" r="1.5" />
+                <circle cx="16" cy="17" r="1.5" />
+              </svg>
+            </span>
+          </button>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <p className="mono text-[11px] uppercase tracking-[0.14em] text-[#c9dfd8]">#{index + 1}</p>
+              {isLocal && (
+                <span className="mono rounded-full border border-amber-200/80 bg-amber-200/20 px-2 py-[2px] text-[10px] font-semibold uppercase tracking-[0.14em] text-amber-100 shadow-[0_0_0_1px_rgba(255,209,102,0.22)]">
+                  You
+                </span>
+              )}
+            </div>
+            <p className="mt-1 truncate text-sm font-semibold text-white" title={player.name}>
+              {truncateLobbyName(player.name)}
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
+          <ActionIconButton
+            label="Move to first"
+            disabled={reconnectBlocked || index === 0}
+            onClick={() => onMoveToEdge(player.id, 'start')}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M5 5H19" />
+              <path d="M12 18V8" />
+              <path d="M8 12L12 8L16 12" />
+            </svg>
+          </ActionIconButton>
+          <ActionIconButton
+            label="Move to last"
+            disabled={reconnectBlocked || index === totalPlayers - 1}
+            onClick={() => onMoveToEdge(player.id, 'end')}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M5 19H19" />
+              <path d="M12 6V16" />
+              <path d="M8 12L12 16L16 12" />
+            </svg>
+          </ActionIconButton>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 const ModalFrame = ({
   title,
@@ -87,13 +232,61 @@ export const HostLobbySetup = ({
   pendingInitialMinutes,
   setPendingInitialMinutes,
   sendControl,
-  moveTurnOrder,
   copyToClipboard,
   handleLeaveRoom,
 }: HostLobbySetupProps) => {
   const [shareOpen, setShareOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [draftMinutes, setDraftMinutes] = useState(pendingInitialMinutes)
+
+  const playerIds = orderedPlayers.map((player) => player.id)
+  const sensors = useSensors(
+    useSensor(MouseSensor, {
+      activationConstraint: { distance: 6 },
+    }),
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: 35, tolerance: 10 },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  )
+
+  const applyTurnOrder = async (nextOrder: string[]) => {
+    if (nextOrder.length < 1) {
+      return
+    }
+    await sendControl('SET_TURN_ORDER', { turnOrder: nextOrder })
+  }
+
+  const moveToEdge = async (playerId: string, edge: 'start' | 'end') => {
+    const currentIndex = playerIds.indexOf(playerId)
+    if (currentIndex < 0) {
+      return
+    }
+
+    const targetIndex = edge === 'start' ? 0 : playerIds.length - 1
+    if (targetIndex === currentIndex) {
+      return
+    }
+
+    await applyTurnOrder(arrayMove(playerIds, currentIndex, targetIndex))
+  }
+
+  const onDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event
+    if (!over || active.id === over.id) {
+      return
+    }
+
+    const oldIndex = playerIds.indexOf(String(active.id))
+    const newIndex = playerIds.indexOf(String(over.id))
+    if (oldIndex < 0 || newIndex < 0 || oldIndex === newIndex) {
+      return
+    }
+
+    void applyTurnOrder(arrayMove(playerIds, oldIndex, newIndex))
+  }
 
   useEffect(() => {
     if (!shareOpen && !settingsOpen) {
@@ -118,9 +311,6 @@ export const HostLobbySetup = ({
           <div>
             <p className="mono text-[11px] uppercase tracking-[0.16em] text-amber-200">Host Lobby Setup</p>
             <h2 className="mt-2 text-2xl font-semibold text-white md:text-3xl">{state.roomName}</h2>
-            <p className="mono mt-2 text-xs text-[#b8d6cd]">
-              Arrange player turn order before starting the first round.
-            </p>
           </div>
           <div className="flex gap-2">
             <IconButton label="Open share room" onClick={() => setShareOpen(true)}>
@@ -131,78 +321,68 @@ export const HostLobbySetup = ({
                 <path d="M8.7 10.8l6.6-3.6M8.7 13.2l6.6 3.6" />
               </svg>
             </IconButton>
-            <IconButton label="Open round settings" onClick={() => { setDraftMinutes(pendingInitialMinutes); setSettingsOpen(true) }}>
+          </div>
+        </div>
+
+        <div className="mt-3 rounded-xl border border-white/20 bg-black/20 p-3 text-xs text-[#d3e3de]">
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <p className="mono whitespace-nowrap text-[11px] text-[#d3e3de]">Players ready: {orderedPlayers.length}</p>
+              <p className="mono mt-1 whitespace-nowrap text-[11px] text-[#d3e3de]">Initial time: {Math.max(1, pendingInitialMinutes)} min</p>
+            </div>
+            <ActionIconButton
+              label="Open round settings"
+              onClick={() => {
+                setDraftMinutes(pendingInitialMinutes)
+                setSettingsOpen(true)
+              }}
+            >
               <svg viewBox="0 0 24 24" aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="12" cy="12" r="3" />
                 <path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.2a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.2a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3h0a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.2a1.6 1.6 0 0 0 1 1.5h0a1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8v0a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.2a1.6 1.6 0 0 0-1.5 1z" />
               </svg>
-            </IconButton>
+            </ActionIconButton>
           </div>
         </div>
 
-        <div className="mt-4 flex-1 min-h-0 space-y-2 overflow-y-auto pr-1">
-          {orderedPlayers.map((player, index) => (
-            <div
-              key={player.id}
-              className="rounded-xl border border-white/20 bg-black/20 px-3 py-3"
-            >
-              <div className="flex items-center justify-between gap-2">
-                <div>
-                  <p className="text-sm font-semibold text-white">
-                    #{index + 1} {player.name}
-                    {player.id === state.localPlayerId ? ' (You)' : ''}
-                  </p>
-                  <p className="mono mt-1 text-xs text-[#bdd8d0]">{formatMs(player.displayMs)}</p>
-                </div>
-                <div className="flex gap-2">
-                  <Button
-                    className="px-2 py-1 text-[10px]"
-                    disabled={reconnectBlocked || index === 0}
-                    onClick={() => void moveTurnOrder(player.id, -1)}
-                  >
-                    Up
-                  </Button>
-                  <Button
-                    className="px-2 py-1 text-[10px]"
-                    disabled={reconnectBlocked || index === orderedPlayers.length - 1}
-                    onClick={() => void moveTurnOrder(player.id, 1)}
-                  >
-                    Down
-                  </Button>
-                  {player.id !== state.hostPlayerId && (
-                    <Button
-                      className="px-2 py-1 text-[10px] border-rose-200/60 text-rose-100"
-                      disabled={reconnectBlocked}
-                      onClick={() => void sendControl('KICK_PLAYER', { targetId: player.id })}
-                    >
-                      Kick
-                    </Button>
-                  )}
-                </div>
-              </div>
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragEnd={onDragEnd}
+          autoScroll={false}
+        >
+          <SortableContext items={playerIds} strategy={verticalListSortingStrategy}>
+            <div className="mt-4 flex-1 min-h-0 space-y-2 overflow-x-hidden overflow-y-auto overscroll-contain pr-1">
+              {orderedPlayers.map((player, index) => (
+                <LobbyPlayerRow
+                  key={player.id}
+                  player={player}
+                  index={index}
+                  totalPlayers={orderedPlayers.length}
+                  isLocal={player.id === state.localPlayerId}
+                  reconnectBlocked={reconnectBlocked}
+                  onMoveToEdge={(playerId, edge) => {
+                    void moveToEdge(playerId, edge)
+                  }}
+                />
+              ))}
             </div>
-          ))}
-        </div>
-
-        <div className="mt-4 rounded-xl border border-white/20 bg-black/20 p-3 text-xs text-[#d3e3de]">
-          <p className="mono">Players ready: {orderedPlayers.length}</p>
-          <p className="mono mt-1">Current order head: {orderedPlayers[0]?.name ?? '-'}</p>
-          <p className="mono mt-1">Initial time: {Math.max(1, pendingInitialMinutes)} min</p>
-        </div>
+          </SortableContext>
+        </DndContext>
 
         <div className="mt-4 grid grid-cols-2 gap-2">
           <Button
-            className="w-full border-emerald-200/75 bg-emerald-200/20 py-3 text-sm"
+            className="w-full border-white/25 bg-transparent py-3 text-sm text-[#c8dad4] hover:border-white/40 hover:bg-white/6"
+            onClick={handleLeaveRoom}
+          >
+            Leave Room
+          </Button>
+          <Button
+            className="w-full border-emerald-200/90 bg-emerald-200/30 py-3 text-sm text-emerald-50 hover:border-emerald-200 hover:bg-emerald-200/36"
             disabled={reconnectBlocked || orderedPlayers.length < 1}
             onClick={() => void sendControl('START_ROUND')}
           >
             Start Round
-          </Button>
-          <Button
-            className="w-full border-rose-200/60 py-3 text-sm text-rose-100"
-            onClick={handleLeaveRoom}
-          >
-            Leave Room
           </Button>
         </div>
       </article>

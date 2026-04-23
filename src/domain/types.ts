@@ -149,7 +149,6 @@ export type ControlActionType =
   | 'SET_INITIAL_TIME'
   | 'GLOBAL_PAUSE'
   | 'GLOBAL_RESUME'
-  | 'KICK_PLAYER'
   | 'RENAME_SELF'
 
 export interface ReducerAction {

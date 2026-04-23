@@ -127,12 +127,6 @@ const validateControlPayload = (
       }
       return null
     }
-    case 'KICK_PLAYER': {
-      if (typeof payload.targetId !== 'string' || payload.targetId.length < 1) {
-        return 'targetId is required.'
-      }
-      return null
-    }
     case 'START_TIMER': {
       if (payload.playerId !== undefined && typeof payload.playerId !== 'string') {
         return 'playerId must be a string when provided.'
@@ -167,7 +161,6 @@ const validateControlAuthorization = (
     'SET_INITIAL_TIME',
     'GLOBAL_PAUSE',
     'GLOBAL_RESUME',
-    'KICK_PLAYER',
   ]
 
   if (hostOnlyActions.includes(action) && !isHostActor) {
@@ -1700,7 +1693,6 @@ function App() {
               pendingInitialMinutes={pendingInitialMinutes}
               setPendingInitialMinutes={setPendingInitialMinutes}
               sendControl={sendControl}
-              moveTurnOrder={moveTurnOrder}
               copyToClipboard={copyToClipboard}
               handleLeaveRoom={handleLeaveRoom}
             />
