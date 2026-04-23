@@ -117,6 +117,7 @@ const LobbyPlayerRow = ({
     transition,
     isDragging,
   } = useSortable({ id: player.id, disabled: reconnectBlocked })
+  const isConnected = player.connected
 
   return (
     <div
@@ -125,7 +126,11 @@ const LobbyPlayerRow = ({
         transform: CSS.Transform.toString(transform),
         transition,
       }}
-      className={`rounded-xl border border-white/20 bg-black/20 px-3 py-3 ${isDragging ? 'z-20 border-amber-200/70 bg-[#133240] shadow-[0_16px_36px_rgba(0,0,0,0.45)]' : ''}`}
+      className={`rounded-xl border px-3 py-3 ${
+        isConnected
+          ? 'border-white/20 bg-black/20'
+          : 'border-rose-300/40 bg-rose-200/5 opacity-75 saturate-50'
+      } ${isDragging ? 'z-20 border-amber-200/70 bg-[#133240] shadow-[0_16px_36px_rgba(0,0,0,0.45)]' : ''}`}
     >
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
@@ -151,6 +156,11 @@ const LobbyPlayerRow = ({
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <p className="mono text-[11px] uppercase tracking-[0.14em] text-[#c9dfd8]">#{index + 1}</p>
+              {!isConnected && (
+                <span className="mono rounded-md border border-rose-300/60 bg-rose-200/10 px-2 py-1 text-[10px] uppercase tracking-[0.12em] text-rose-200">
+                  Disconnected
+                </span>
+              )}
               {isLocal && (
                 <span className="mono rounded-full border border-cyan-200/80 bg-cyan-300/15 px-2 py-[2px] text-[10px] font-semibold uppercase tracking-[0.14em] text-cyan-100 shadow-[0_0_0_1px_rgba(125,211,252,0.24)]">
                   You
