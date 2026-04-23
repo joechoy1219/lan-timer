@@ -212,6 +212,7 @@ function App() {
   const [hostReconnectDeadlineAt, setHostReconnectDeadlineAt] = useState<number | null>(null)
   const [hostReconnectSecondsLeft, setHostReconnectSecondsLeft] = useState(0)
   const [forcedLeaveReason, setForcedLeaveReason] = useState<string | null>(null)
+  const [isRecoveringRoom, setIsRecoveringRoom] = useState(false)
   const [joinElapsedSeconds, setJoinElapsedSeconds] = useState(0)
   const [joinStatusModal, setJoinStatusModal] = useState<{
     open: boolean
@@ -749,6 +750,30 @@ function App() {
   }, [applyHostAction, setStatusText, state])
 
   useEffect(() => () => service.cleanup(), [])
+
+  // Handle page unload - cleanup connections to trigger PEER_LEFT_LOCAL on host
+  // This marks participant as disconnected without removing them completely
+  // Allows reconnection with same or different room on next load
+  useEffect(() => {
+    const handlePageUnload = () => {
+      // Cleanup local peer service connections
+      // This will trigger close events which send PEER_LEFT_LOCAL to host
+      // Host will then mark participant as disconnected (not removed)
+      service.cleanup()
+    }
+
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    // Use pagehide event for better reliability across browser navigation scenarios
+    // Covers: F5 refresh, tab close, navigation, back button
+    window.addEventListener('pagehide', handlePageUnload, { capture: true })
+
+    return () => {
+      window.removeEventListener('pagehide', handlePageUnload, { capture: true })
+    }
+  }, [])
 
   useEffect(() => {
     return () => {
@@ -1365,14 +1390,50 @@ function App() {
     let cancelled = false
 
     const tryRecover = async () => {
-      if (autoJoinCodeRef.current.length === JOIN_CODE_LENGTH) {
+      // Check if URL has a new join code
+      const urlJoinCode = getJoinCodeFromUrl()
+      const lastRoomId = localStorage.getItem('lan-timer:last-room-id')
+      
+      // If URL has a join code that differs from the last room, leave the old room
+      if (urlJoinCode.length === JOIN_CODE_LENGTH && lastRoomId && urlJoinCode !== lastRoomId) {
+        // Different room in URL - clear old room data and join new one
+        localStorage.removeItem('lan-timer:last-room-id')
+        autoJoinCodeRef.current = urlJoinCode
+        autoJoinTriggeredRef.current = false
+        setIsRecoveringRoom(true)
+        setStatusText('Joining different room...')
+        
+        // Wait a bit for the UI to update, then join the new room
+        await new Promise((resolve) => setTimeout(resolve, 300))
+        if (!cancelled) {
+          const joinRef = joinRoomRef.current
+          if (joinRef) {
+            await joinRef({ joinCode: urlJoinCode, showModal: true })
+          }
+          setIsRecoveringRoom(false)
+        }
         return
       }
 
-      const lastRoomId = localStorage.getItem('lan-timer:last-room-id')
+      // Check for auto-join code from URL (first load scenario)
+      if (autoJoinCodeRef.current.length === JOIN_CODE_LENGTH) {
+        if (autoJoinCodeRef.current !== lastRoomId) {
+          // Genuinely different room join via invite link - let auto-join effect handle it
+          return
+        }
+        // Same room code in URL as last known room: user returned via the same invite link.
+        // Suppress the auto-join effect so it doesn't create a new playerId;
+        // fall through to recover with the stored playerId from the snapshot instead.
+        autoJoinTriggeredRef.current = true
+      }
+
       if (!lastRoomId) {
         return
       }
+
+      // Show disconnected state during recovery
+      setIsRecoveringRoom(true)
+      setStatusText('Reconnecting to previous room...')
 
       const recovered = await hydrateFromSnapshot(lastRoomId)
       if (cancelled) {
@@ -1381,6 +1442,7 @@ function App() {
 
       if (!recovered) {
         localStorage.removeItem('lan-timer:last-room-id')
+        setIsRecoveringRoom(false)
         return
       }
 
@@ -1395,6 +1457,7 @@ function App() {
       if (recovered.role === 'host') {
         const networkHandler = handleNetworkMessageRef.current
         if (!networkHandler) {
+          setIsRecoveringRoom(false)
           return
         }
         service.createHost(recovered.hostPeerId, (message, senderPeerId) => {
@@ -1406,16 +1469,16 @@ function App() {
             setPendingInitialMinutes(Math.max(1, Math.round(recovered.initialTimeMs / 60_000)))
             setLocalPeerId(recovered.hostPeerId)
             setPeerConnected(true)
+            // Clear disconnected state once room is restored
+            setIsRecoveringRoom(false)
           }
           if (!status.startsWith('Host ready as')) {
             setPeerConnected(false)
           }
         })
-        setStatusText('Recovering host room connection...')
         return
       }
 
-      setStatusText('Reconnecting to previous room...')
       const reconnect = joinRoomRef.current
       if (reconnect) {
         await reconnect({
@@ -1425,7 +1488,15 @@ function App() {
           passwordHash: recovered.passwordHash,
           playerId: recovered.localPlayerId,
           showModal: false,
+        }).then(() => {
+          // Clear disconnected state once room is restored
+          setIsRecoveringRoom(false)
+        }).catch(() => {
+          // Clear disconnected state even on error
+          setIsRecoveringRoom(false)
         })
+      } else {
+        setIsRecoveringRoom(false)
       }
     }
 
@@ -1578,6 +1649,13 @@ function App() {
 
         {!state && (
           <section className="space-y-3">
+            {isRecoveringRoom && (
+              <article className="panel reveal rounded-2xl border border-amber-300/60 p-4 text-amber-100">
+                <h2 className="text-base font-semibold">Reconnecting</h2>
+                <p className="mt-1 text-sm text-amber-100/90">Reconnecting to room...</p>
+              </article>
+            )}
+
             {forcedLeaveReason && (
               <article className="panel reveal rounded-2xl border border-rose-300/60 p-4 text-rose-100">
                 <h2 className="text-base font-semibold">Disconnected</h2>
