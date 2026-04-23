@@ -53,10 +53,14 @@ export const ParticipantTurnView = ({
 
       <div className="rounded-2xl border border-emerald-200/35 bg-gradient-to-br from-emerald-200/15 via-cyan-200/10 to-transparent p-4 md:p-6">
         <p className="mono text-[11px] uppercase tracking-[0.14em] text-[#d2ece3]">Active Player</p>
-        <h2 className="mt-2 text-2xl font-semibold text-white md:text-3xl">
-          {current?.name ?? '-'}
-          {current?.id === state.localPlayerId ? ' (You)' : ''}
-        </h2>
+        <div className="mt-2 flex items-center gap-2">
+          <h2 className="truncate text-2xl font-semibold text-white md:text-3xl">{current?.name ?? '-'}</h2>
+          {current?.id === state.localPlayerId && (
+            <span className="mono rounded-full border border-cyan-200/80 bg-cyan-300/15 px-2 py-[2px] text-[10px] font-semibold uppercase tracking-[0.14em] text-cyan-100 shadow-[0_0_0_1px_rgba(125,211,252,0.24)]">
+              You
+            </span>
+          )}
+        </div>
         <p className="mono mt-3 text-5xl tracking-tight text-[#f2f8f6] md:text-7xl">
           {current ? formatMs(current.displayMs) : '--:--'}
         </p>

@@ -65,18 +65,24 @@ export const PlayersPanel = ({
             }`}
           >
             <div className="flex items-center justify-between">
-              <p className="text-sm font-semibold text-white">
-                {player.name}
-                {isLocal ? ' (You)' : ''}
-              </p>
-              <span className="mono rounded-md border border-white/20 px-2 py-1 text-[10px] text-[#c3d7d0]">
-                #{index + 1}
-              </span>
-              {!isConnected && (
-                <span className="mono rounded-md border border-rose-300/60 bg-rose-200/10 px-2 py-1 text-[10px] uppercase tracking-[0.12em] text-rose-200">
-                  Disconnected
+              <div className="min-w-0 flex items-center gap-2">
+                <p className="truncate text-sm font-semibold text-white">{player.name}</p>
+                {isLocal && (
+                  <span className="mono rounded-full border border-cyan-200/80 bg-cyan-300/15 px-2 py-[2px] text-[10px] font-semibold uppercase tracking-[0.14em] text-cyan-100 shadow-[0_0_0_1px_rgba(125,211,252,0.24)]">
+                    You
+                  </span>
+                )}
+              </div>
+              <div className="ml-2 flex items-center gap-2">
+                <span className="mono rounded-md border border-white/20 px-2 py-1 text-[10px] text-[#c3d7d0]">
+                  #{index + 1}
                 </span>
-              )}
+                {!isConnected && (
+                  <span className="mono rounded-md border border-rose-300/60 bg-rose-200/10 px-2 py-1 text-[10px] uppercase tracking-[0.12em] text-rose-200">
+                    Disconnected
+                  </span>
+                )}
+              </div>
             </div>
             <p className={`mono mt-3 text-4xl tracking-tight ${lowTime ? 'text-rose-300' : 'text-[#ecf5f1]'} ${isConnected ? '' : 'text-white/60'}`}>
               {formatMs(player.displayMs)}

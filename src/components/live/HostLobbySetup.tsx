@@ -152,7 +152,7 @@ const LobbyPlayerRow = ({
             <div className="flex items-center gap-2">
               <p className="mono text-[11px] uppercase tracking-[0.14em] text-[#c9dfd8]">#{index + 1}</p>
               {isLocal && (
-                <span className="mono rounded-full border border-amber-200/80 bg-amber-200/20 px-2 py-[2px] text-[10px] font-semibold uppercase tracking-[0.14em] text-amber-100 shadow-[0_0_0_1px_rgba(255,209,102,0.22)]">
+                <span className="mono rounded-full border border-cyan-200/80 bg-cyan-300/15 px-2 py-[2px] text-[10px] font-semibold uppercase tracking-[0.14em] text-cyan-100 shadow-[0_0_0_1px_rgba(125,211,252,0.24)]">
                   You
                 </span>
               )}
