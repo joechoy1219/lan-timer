@@ -405,7 +405,7 @@ export const PlayersPanel = ({
               <div key={digit.key} className="flex flex-col items-center gap-1">
                 <button
                   type="button"
-                  className="mono inline-flex h-6 w-8 items-center justify-center rounded-md border border-white/25 bg-black/20 text-[11px] text-amber-200/80 transition hover:border-amber-200/70 hover:text-amber-100 disabled:opacity-40"
+                  className="mono inline-flex h-6 w-full items-center justify-center rounded-md border border-white/25 bg-black/20 text-[11px] text-amber-200/80 transition hover:border-amber-200/70 hover:text-amber-100 disabled:opacity-40"
                   onClick={() => updateAdjustDigit(digit.key, 1)}
                   disabled={applyingAdjust}
                   aria-label={`Increase ${digit.label}`}
@@ -420,7 +420,7 @@ export const PlayersPanel = ({
                 />
                 <button
                   type="button"
-                  className="mono inline-flex h-6 w-8 items-center justify-center rounded-md border border-white/25 bg-black/20 text-[11px] text-amber-200/80 transition hover:border-amber-200/70 hover:text-amber-100 disabled:opacity-40"
+                  className="mono inline-flex h-6 w-full items-center justify-center rounded-md border border-white/25 bg-black/20 text-[11px] text-amber-200/80 transition hover:border-amber-200/70 hover:text-amber-100 disabled:opacity-40"
                   onClick={() => updateAdjustDigit(digit.key, -1)}
                   disabled={applyingAdjust}
                   aria-label={`Decrease ${digit.label}`}
@@ -439,7 +439,7 @@ export const PlayersPanel = ({
               <div key={digit.key} className="flex flex-col items-center gap-1">
                 <button
                   type="button"
-                  className="mono inline-flex h-6 w-8 items-center justify-center rounded-md border border-white/25 bg-black/20 text-[11px] text-amber-200/80 transition hover:border-amber-200/70 hover:text-amber-100 disabled:opacity-40"
+                  className="mono inline-flex h-6 w-full items-center justify-center rounded-md border border-white/25 bg-black/20 text-[11px] text-amber-200/80 transition hover:border-amber-200/70 hover:text-amber-100 disabled:opacity-40"
                   onClick={() => updateAdjustDigit(digit.key, 1)}
                   disabled={applyingAdjust}
                   aria-label={`Increase ${digit.label}`}
@@ -454,7 +454,7 @@ export const PlayersPanel = ({
                 />
                 <button
                   type="button"
-                  className="mono inline-flex h-6 w-8 items-center justify-center rounded-md border border-white/25 bg-black/20 text-[11px] text-amber-200/80 transition hover:border-amber-200/70 hover:text-amber-100 disabled:opacity-40"
+                  className="mono inline-flex h-6 w-full items-center justify-center rounded-md border border-white/25 bg-black/20 text-[11px] text-amber-200/80 transition hover:border-amber-200/70 hover:text-amber-100 disabled:opacity-40"
                   onClick={() => updateAdjustDigit(digit.key, -1)}
                   disabled={applyingAdjust}
                   aria-label={`Decrease ${digit.label}`}
