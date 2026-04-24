@@ -1,12 +1,14 @@
-import {
+﻿import {
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from 'react'
 import { nanoid } from 'nanoid'
 import { AnimatePresence, animate, motion } from 'framer-motion'
+import { QRCodeSVG } from 'qrcode.react'
 import { resolveRemainingMs, withElapsedCommitted } from './domain/timerEngine'
 import type { NetworkMessage, RoomState, SnapshotEnvelope } from './domain/types'
 import {
@@ -179,6 +181,72 @@ const validateControlAuthorization = (
   return null
 }
 
+const HeaderIconButton = ({
+  label,
+  onClick,
+  children,
+  className = '',
+}: {
+  label: string
+  onClick: () => void
+  children: ReactNode
+  className?: string
+}) => (
+  <button
+    type="button"
+    className={`mono inline-flex h-11 w-11 items-center justify-center rounded-xl border border-white/20 bg-black/20 text-[#d6ece6] transition hover:border-amber-200/80 hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-200/90 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0b1d26] ${className}`}
+    aria-label={label}
+    onClick={onClick}
+  >
+    {children}
+  </button>
+)
+
+const AppModalFrame = ({
+  title,
+  children,
+  onClose,
+  showFooterClose = true,
+}: {
+  title: string
+  children: ReactNode
+  onClose: () => void
+  showFooterClose?: boolean
+}) => (
+  <div
+    className="fixed inset-0 z-40 flex items-center justify-center bg-[#041014]/84 p-4 backdrop-blur-sm"
+    onClick={onClose}
+  >
+    <div
+      className="panel-strong flex max-h-[85dvh] w-full max-w-md flex-col rounded-3xl p-5 shadow-[0_24px_80px_rgba(0,0,0,0.58)]"
+      onClick={(event) => event.stopPropagation()}
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-xl font-semibold text-white">{title}</h3>
+      </div>
+      <div className="mt-4 min-h-0 flex-1 overflow-y-auto">{children}</div>
+      {showFooterClose && (
+        <div className="mt-4 border-t border-white/15 pt-4">
+          <Button className="w-full" onClick={onClose}>Close</Button>
+        </div>
+      )}
+    </div>
+  </div>
+)
+
+const formatTimelineTime = (at: number) => {
+  const date = new Date(at)
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}:${String(date.getSeconds()).padStart(2, '0')}`
+}
+
+const resolveTimelinePlayerName = (
+  players: Array<{ id: string; name: string }>,
+  playerId: string | null,
+) => players.find((player) => player.id === playerId)?.name ?? '-'
+
 function App() {
   const {
     state,
@@ -207,8 +275,13 @@ function App() {
   const [cameraScanning, setCameraScanning] = useState(false)
   const [joinTipsOpen, setJoinTipsOpen] = useState(false)
   const [copiedShare, setCopiedShare] = useState<'code' | 'link' | null>(null)
+  const [hostRoundShareOpen, setHostRoundShareOpen] = useState(false)
+  const [hostRoundControlOpen, setHostRoundControlOpen] = useState(false)
+  const [hostRoundLeaveOpen, setHostRoundLeaveOpen] = useState(false)
+  const [hostRoundResetOpen, setHostRoundResetOpen] = useState(false)
+  const [hostRoundEventsOpen, setHostRoundEventsOpen] = useState(false)
   const [pendingInitialMinutes, setPendingInitialMinutes] = useState(10)
-  const [localPeerId, setLocalPeerId] = useState('')
+  const [, setLocalPeerId] = useState('')
   const [hostReconnectDeadlineAt, setHostReconnectDeadlineAt] = useState<number | null>(null)
   const [hostReconnectSecondsLeft, setHostReconnectSecondsLeft] = useState(0)
   const [forcedLeaveReason, setForcedLeaveReason] = useState<string | null>(null)
@@ -261,6 +334,7 @@ function App() {
 
   const isHost = state?.role === 'host'
   const reconnectBlocked = Boolean(hostReconnectDeadlineAt && state?.role === 'participant')
+  const hostRunningMode = Boolean(state && isHost && state.phase !== 'lobby')
 
   const beginHostReconnectWait = useCallback((reason: string) => {
     setHostReconnectDeadlineAt((current) => {
@@ -649,6 +723,17 @@ function App() {
     const resetId = window.setTimeout(() => setCopiedShare(null), 1300)
     return () => window.clearTimeout(resetId)
   }, [copiedShare])
+
+  useEffect(() => {
+    if (hostRunningMode) {
+      return
+    }
+    setHostRoundShareOpen(false)
+    setHostRoundControlOpen(false)
+    setHostRoundLeaveOpen(false)
+    setHostRoundResetOpen(false)
+    setHostRoundEventsOpen(false)
+  }, [hostRunningMode])
 
   useEffect(() => {
     const id = setInterval(() => tick(), 250)
@@ -1597,8 +1682,58 @@ function App() {
     await sendControl('SET_TURN_ORDER', { turnOrder })
   }, [sendControl, state])
 
+  const kickParticipant = useCallback(async (playerId: string) => {
+    if (!state || state.role !== 'host') {
+      return
+    }
+    removeParticipantFromHostState(state, playerId)
+  }, [removeParticipantFromHostState, state])
+
+  const adjustParticipantTime = useCallback(async (playerId: string, deltaMs: number) => {
+    if (!state || state.role !== 'host') {
+      return
+    }
+    if (!Number.isFinite(deltaMs) || deltaMs === 0) {
+      return
+    }
+
+    const now = Date.now()
+    const committed = withElapsedCommitted(state, now)
+    const target = committed.players.find((player) => player.id === playerId)
+    if (!target) {
+      return
+    }
+
+    const nextRemainingMs = Math.max(0, Math.floor(target.remainingMs + deltaMs))
+    const nextStateBase: RoomState = {
+      ...committed,
+      seq: committed.seq + 1,
+      updatedAt: now,
+      players: committed.players.map((player) => (
+        player.id === playerId
+          ? {
+              ...player,
+              remainingMs: nextRemainingMs,
+            }
+          : player
+      )),
+    }
+
+    const absSeconds = Math.floor(Math.abs(deltaMs) / 1000)
+    const hh = String(Math.floor(absSeconds / 3600)).padStart(2, '0')
+    const mm = String(Math.floor((absSeconds % 3600) / 60)).padStart(2, '0')
+    const ss = String(absSeconds % 60).padStart(2, '0')
+    const deltaLabel = `${deltaMs >= 0 ? '+' : '-'}${hh}:${mm}:${ss}`
+    const nextState = appendTimeline(nextStateBase, `Host adjusted ${target.name} time by ${deltaLabel}.`, now)
+
+    setStateFromHost(nextState)
+    service.broadcast(createSnapshot(nextState))
+    setStatusText(`Adjusted ${target.name}: ${deltaLabel}`)
+  }, [setStateFromHost, setStatusText, state])
+
   const myTurn = Boolean(state && turnContext.currentPlayerId === state.localPlayerId && state.phase !== 'lobby')
   const hostLobbyMode = Boolean(state && isHost && state.phase === 'lobby')
+  const hostFullscreenMode = hostLobbyMode || hostRunningMode
   const landingButtonClass = 'w-full min-h-11 py-2.5 text-[12px]'
   const landingNeutralButtonClass = `${landingButtonClass} border-white/50 bg-white/8 text-white`
   const landingCreateButtonClass = `${landingButtonClass} border-emerald-200/65 bg-emerald-200/10 text-emerald-50`
@@ -1620,14 +1755,14 @@ function App() {
       className={`grain ${
         !state
           ? 'h-dvh overflow-hidden px-4 py-4 sm:px-6 sm:py-6'
-          : `px-5 pt-6 md:px-8 ${hostLobbyMode ? 'h-dvh overflow-hidden pb-4' : myTurn ? 'pb-24 md:pb-10' : 'pb-10'}`
+          : `px-5 pt-6 md:px-8 ${hostFullscreenMode ? 'h-dvh overflow-hidden pb-4' : myTurn ? 'pb-24 md:pb-10' : 'pb-10'}`
       }`}
     >
       <div
         className={`mx-auto ${
           !state
             ? 'flex h-full w-full max-w-sm flex-col justify-center gap-4'
-            : `${hostLobbyMode ? 'max-w-6xl flex h-full flex-col gap-4' : 'max-w-6xl space-y-6'}`
+            : `${hostFullscreenMode ? 'max-w-6xl flex h-full flex-col gap-4' : 'max-w-6xl space-y-6'}`
         }`}
       >
         {!state && (
@@ -1778,38 +1913,77 @@ function App() {
         )}
 
         {state && isHost && state.phase !== 'lobby' && (
-          <section className="grid gap-4 lg:grid-cols-[1.3fr_1fr]">
+          <div className="relative min-h-0 flex-1">
             <PlayersPanel
               state={state}
               isHost={isHost}
               reconnectBlocked={reconnectBlocked}
               orderedPlayers={orderedPlayers}
-              sendControl={sendControl}
               moveTurnOrder={moveTurnOrder}
+              kickParticipant={kickParticipant}
+              adjustParticipantTime={adjustParticipantTime}
+              fullHeight
+              onOpenControlDeck={() => setHostRoundControlOpen(true)}
+              leftActions={(
+                <HeaderIconButton
+                  label="Leave room"
+                  onClick={() => setHostRoundLeaveOpen(true)}
+                  className="hover:border-rose-300/60 hover:text-rose-200"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true" className="h-5 w-5 -scale-x-100" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                    <polyline points="16 17 21 12 16 7" />
+                    <line x1="21" y1="12" x2="9" y2="12" />
+                  </svg>
+                </HeaderIconButton>
+              )}
+              headerActions={(
+                <div className="flex items-center gap-2">
+                  <HeaderIconButton
+                    label="Reset all timers"
+                    onClick={() => setHostRoundResetOpen(true)}
+                    className="hover:border-amber-300/70 hover:text-amber-100"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M3 12a9 9 0 1 0 3-6.7" />
+                      <polyline points="3 3 3 9 9 9" />
+                    </svg>
+                  </HeaderIconButton>
+                  <HeaderIconButton
+                    label={state.phase === 'running' ? 'Pause room' : 'Resume room'}
+                    onClick={() => void sendControl(state.phase === 'running' ? 'GLOBAL_PAUSE' : 'GLOBAL_RESUME')}
+                  >
+                    {state.phase === 'running' ? (
+                      <svg viewBox="0 0 24 24" aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="6" y="5" width="4" height="14" rx="1" />
+                        <rect x="14" y="5" width="4" height="14" rx="1" />
+                      </svg>
+                    ) : (
+                      <svg viewBox="0 0 24 24" aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                        <polygon points="8 5 19 12 8 19 8 5" />
+                      </svg>
+                    )}
+                  </HeaderIconButton>
+                  <HeaderIconButton label="Open share room" onClick={() => setHostRoundShareOpen(true)}>
+                    <svg viewBox="0 0 24 24" aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="18" cy="5" r="3" />
+                      <circle cx="6" cy="12" r="3" />
+                      <circle cx="18" cy="19" r="3" />
+                      <path d="M8.7 10.8l6.6-3.6M8.7 13.2l6.6 3.6" />
+                    </svg>
+                  </HeaderIconButton>
+                </div>
+              )}
             />
-
-            <ControlDeck
-              state={state}
-              isHost={isHost}
-              statusText={statusText}
-              reconnectBlocked={reconnectBlocked}
-              hostReconnectDeadlineAt={hostReconnectDeadlineAt}
-              hostReconnectSecondsLeft={hostReconnectSecondsLeft}
-              myTurn={myTurn}
-              pendingInitialMinutes={pendingInitialMinutes}
-              setPendingInitialMinutes={setPendingInitialMinutes}
-              peerConnected={peerConnected}
-              localPeerId={localPeerId}
-              copiedShare={copiedShare}
-              hostJoinCode={hostJoinCode}
-              hostShareLink={hostShareLink}
-              players={players}
-              turnContext={turnContext}
-              sendControl={sendControl}
-              copyToClipboard={copyToClipboard}
-              handleLeaveRoom={handleLeaveRoom}
-            />
-          </section>
+            <button
+              type="button"
+              aria-label="Open information"
+              className="mono fixed right-0 top-1/2 z-30 inline-flex h-24 w-4 -translate-y-1/2 items-center justify-center rounded-l-xl border border-r-0 border-white/15 bg-white/5 text-xs font-semibold tracking-[0.08em] text-white/60 backdrop-blur-sm transition hover:border-amber-200/60 hover:bg-white/10 hover:text-amber-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-200/90"
+              onClick={() => setHostRoundEventsOpen(true)}
+            >
+              &lt;&lt;
+            </button>
+          </div>
         )}
 
         {state && !isHost && (
@@ -1824,28 +1998,206 @@ function App() {
             />
 
             <ControlDeck
-              state={state}
               isHost={isHost}
               participantMode
               statusText={statusText}
               reconnectBlocked={reconnectBlocked}
               hostReconnectDeadlineAt={hostReconnectDeadlineAt}
               hostReconnectSecondsLeft={hostReconnectSecondsLeft}
-              myTurn={myTurn}
               pendingInitialMinutes={pendingInitialMinutes}
               setPendingInitialMinutes={setPendingInitialMinutes}
-              peerConnected={peerConnected}
-              localPeerId={localPeerId}
               copiedShare={copiedShare}
               hostJoinCode={hostJoinCode}
               hostShareLink={hostShareLink}
-              players={players}
-              turnContext={turnContext}
               sendControl={sendControl}
               copyToClipboard={copyToClipboard}
-              handleLeaveRoom={handleLeaveRoom}
             />
           </section>
+        )}
+
+        {state && isHost && state.phase !== 'lobby' && hostRoundShareOpen && (
+          <AppModalFrame title="Share Room" onClose={() => setHostRoundShareOpen(false)}>
+            <div className="space-y-3">
+              <button
+                type="button"
+                className="group w-full rounded-2xl border border-emerald-200/40 bg-emerald-200/10 px-4 py-4 text-center transition hover:border-emerald-200/70 hover:bg-emerald-200/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-200/90"
+                onClick={() => void copyToClipboard(hostJoinCode, 'code')}
+                aria-label="Copy invite code"
+              >
+                <div className="flex items-center justify-center gap-2">
+                  <p className="mono text-[11px] uppercase tracking-[0.16em] text-emerald-100">Invite Code</p>
+                  <span className="transition-transform duration-200 group-active:scale-110">
+                    {copiedShare === 'code' ? (
+                      <svg className="h-4 w-4 text-emerald-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <polyline points="20 6 9 17 4 12" />
+                      </svg>
+                    ) : (
+                      <svg className="h-4 w-4 text-[#8dbdb6]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                      </svg>
+                    )}
+                  </span>
+                </div>
+                <p className="mono mt-2 text-3xl tracking-[0.1em] text-white">{hostJoinCode}</p>
+                <p className={`mono mt-2 text-[11px] uppercase tracking-[0.12em] transition-colors duration-300 ${copiedShare === 'code' ? 'text-emerald-300' : 'text-[#cce6dd]'}`}>
+                  {copiedShare === 'code' ? 'Copied!' : 'Click to copy'}
+                </p>
+              </button>
+
+              <button
+                type="button"
+                className="group w-full rounded-2xl border border-white/15 bg-black/20 px-4 py-4 transition hover:border-white/30 hover:bg-black/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-200/90"
+                onClick={() => void copyToClipboard(hostShareLink, 'link')}
+                aria-label="Copy invite link"
+              >
+                <div className="mb-3 flex items-center justify-center gap-2">
+                  <p className="mono text-[11px] uppercase tracking-[0.12em] text-[#d1e7df]">Invite Link</p>
+                  <span className="transition-transform duration-200 group-active:scale-110">
+                    {copiedShare === 'link' ? (
+                      <svg className="h-4 w-4 text-emerald-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <polyline points="20 6 9 17 4 12" />
+                      </svg>
+                    ) : (
+                      <svg className="h-4 w-4 text-[#8dbdb6]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                      </svg>
+                    )}
+                  </span>
+                </div>
+
+                <div className="flex justify-center">
+                  <div className="inline-flex rounded-2xl border border-white/20 bg-white p-3">
+                    <QRCodeSVG
+                      value={hostShareLink || hostJoinCode}
+                      size={140}
+                      bgColor="transparent"
+                      fgColor="#0f172a"
+                      title="Scan to join room"
+                    />
+                  </div>
+                </div>
+
+                <p className={`mono mt-3 text-[11px] uppercase tracking-[0.12em] transition-colors duration-300 ${copiedShare === 'link' ? 'text-emerald-300' : 'text-[#cce6dd]'}`}>
+                  {copiedShare === 'link' ? 'Copied!' : 'Click to Copy'}
+                </p>
+              </button>
+            </div>
+          </AppModalFrame>
+        )}
+
+        {state && isHost && state.phase !== 'lobby' && hostRoundControlOpen && (
+          <AppModalFrame title="Room Settings" onClose={() => setHostRoundControlOpen(false)}>
+            <ControlDeck
+              isHost={isHost}
+              showShareSection={false}
+              inModal
+              statusText={statusText}
+              reconnectBlocked={reconnectBlocked}
+              hostReconnectDeadlineAt={hostReconnectDeadlineAt}
+              hostReconnectSecondsLeft={hostReconnectSecondsLeft}
+              pendingInitialMinutes={pendingInitialMinutes}
+              setPendingInitialMinutes={setPendingInitialMinutes}
+              copiedShare={copiedShare}
+              hostJoinCode={hostJoinCode}
+              hostShareLink={hostShareLink}
+              sendControl={sendControl}
+              copyToClipboard={copyToClipboard}
+            />
+          </AppModalFrame>
+        )}
+
+        {state && isHost && state.phase !== 'lobby' && hostRoundEventsOpen && (
+          <AppModalFrame title="Information" onClose={() => setHostRoundEventsOpen(false)}>
+            <div className="space-y-3">
+              <div className="rounded-xl border border-white/20 bg-black/20 p-3 text-xs text-[#d3e3de]">
+                <p className="mono">Round: {state.round}</p>
+                <p className="mono mt-1">Previous: {resolveTimelinePlayerName(players, turnContext.previousPlayerId)}</p>
+                <p className="mono mt-1">Current: {resolveTimelinePlayerName(players, turnContext.currentPlayerId)}</p>
+                <p className="mono mt-1">Next: {resolveTimelinePlayerName(players, turnContext.nextPlayerId)}</p>
+              </div>
+              <div className="rounded-xl border border-white/20 bg-black/20 p-3">
+              <ul
+                className="max-h-56 space-y-2 overflow-y-auto pr-1"
+                role="log"
+                aria-live="polite"
+                aria-label="Room timeline events"
+              >
+                {state.timeline.slice(0, 8).map((event) => (
+                  <li key={event.id} className="rounded-lg border border-white/10 bg-white/5 px-2 py-2">
+                    <div className="flex items-start gap-3">
+                      <p className="mono w-14 shrink-0 pt-[1px] text-[10px] text-[#9fc0b7]">{formatTimelineTime(event.at)}</p>
+                      <p className="min-w-0 flex-1 text-xs text-[#dfece8]">{event.message}</p>
+                    </div>
+                  </li>
+                ))}
+                {state.timeline.length === 0 && (
+                  <li className="mono text-[11px] text-[#9fc0b7]">No events yet.</li>
+                )}
+              </ul>
+              </div>
+            </div>
+          </AppModalFrame>
+        )}
+
+        {state && isHost && state.phase !== 'lobby' && hostRoundResetOpen && (
+          <AppModalFrame
+            title="Reset All Timers"
+            onClose={() => setHostRoundResetOpen(false)}
+            showFooterClose={false}
+          >
+            <div className="space-y-4">
+              <p className="text-sm text-[#d3e3de]">
+                Reset will restore all timers to the room settings and restart from player #1 in the current order.
+              </p>
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  className="border-white/25 bg-transparent"
+                  onClick={() => setHostRoundResetOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  className="border-rose-200/60 text-rose-100 hover:border-rose-200"
+                  onClick={() => {
+                    setHostRoundResetOpen(false)
+                    void sendControl('RESET_ALL')
+                  }}
+                >
+                  Reset
+                </Button>
+              </div>
+            </div>
+          </AppModalFrame>
+        )}
+
+        {state && isHost && state.phase !== 'lobby' && hostRoundLeaveOpen && (
+          <AppModalFrame
+            title="Leave Room"
+            onClose={() => setHostRoundLeaveOpen(false)}
+            showFooterClose={false}
+          >
+            <div className="space-y-4">
+              <p className="text-sm text-[#d3e3de]">
+                Are you sure you want to leave? All participants will be disconnected and the room will end.
+              </p>
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  className="border-white/25 bg-transparent"
+                  onClick={() => setHostRoundLeaveOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  className="border-rose-200/60 text-rose-100 hover:border-rose-200"
+                  onClick={() => { setHostRoundLeaveOpen(false); handleLeaveRoom() }}
+                >
+                  Leave Room
+                </Button>
+              </div>
+            </div>
+          </AppModalFrame>
         )}
 
         {state && myTurn && (

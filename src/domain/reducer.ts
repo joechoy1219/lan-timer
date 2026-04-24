@@ -182,6 +182,7 @@ export const applyHostAction = (rawState: RoomState, action: ReducerAction): Roo
       return markUpdated(state, now)
     }
     case 'RESET_ALL': {
+      const nextActivePlayerId = state.turnOrder[0] ?? null
       state = {
         ...state,
         players: state.players.map((player) => ({
@@ -189,14 +190,15 @@ export const applyHostAction = (rawState: RoomState, action: ReducerAction): Roo
           remainingMs: state.initialTimeMs,
         })),
         turnIndex: 0,
-        activePlayerId: state.turnOrder[0] ?? null,
-        isRunning: false,
-        lastStartedAt: null,
-        phase: 'lobby',
+        activePlayerId: nextActivePlayerId,
+        globalPaused: false,
+        isRunning: Boolean(nextActivePlayerId),
+        lastStartedAt: nextActivePlayerId ? now : null,
+        phase: nextActivePlayerId ? 'running' : 'lobby',
         round: 1,
-        lastTurnSwitchedAt: null,
+        lastTurnSwitchedAt: nextActivePlayerId ? now : null,
       }
-      state = pushTimeline(state, 'All timers reset. Back to lobby.', now)
+      state = pushTimeline(state, `All timers reset. ${getPlayerName(state, nextActivePlayerId)} starts from turn #1.`, now)
       return markUpdated(state, now)
     }
     case 'SET_INITIAL_TIME': {
@@ -230,7 +232,7 @@ export const applyHostAction = (rawState: RoomState, action: ReducerAction): Roo
         lastStartedAt: null,
         phase: state.phase === 'lobby' ? 'lobby' : 'paused',
       }
-      state = pushTimeline(state, 'Global pause enabled.', now)
+      state = pushTimeline(state, 'Paused.', now)
       return markUpdated(state, now)
     }
     case 'GLOBAL_RESUME': {
@@ -241,7 +243,7 @@ export const applyHostAction = (rawState: RoomState, action: ReducerAction): Roo
         lastStartedAt: state.phase !== 'lobby' && state.activePlayerId ? now : null,
         phase: state.phase === 'lobby' ? 'lobby' : 'running',
       }
-      state = pushTimeline(state, 'Global resume enabled.', now)
+      state = pushTimeline(state, 'Resumed.', now)
       return markUpdated(state, now)
     }
     case 'RENAME_SELF': {
